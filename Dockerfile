@@ -79,5 +79,6 @@ RUN uv venv && \
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
-VOLUME [ "/opt/data" ]
+# Railway rejects Dockerfile VOLUME instructions. Attach a Railway Volume
+# to /opt/data in the service settings when deploying this root image.
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
