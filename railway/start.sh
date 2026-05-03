@@ -46,6 +46,70 @@ Style:
 - For trading/system questions, prioritize risk control, expected value, execution quality, and operational reliability.
 EOF
 
+# Migrate existing .env + config.yaml so the bbb9a8c provider fix takes
+# effect on volumes that pre-date it. Without this, an old volume keeps
+# `provider: "auto"` in config.yaml AND lacks `LLM_PROVIDER` in .env, so
+# hermes's auto-detect picks whichever API key is present (often Gemini)
+# and routes a non-Gemini model name (e.g. models/deepseek-v4-flash) to
+# the Gemini API → HTTP 404 NOT_FOUND.
+#
+# What this does on every container start:
+#   1. Read /data/.hermes/.env
+#   2. If LLM_PROVIDER is missing, infer it from whichever provider API
+#      key is set (DEEPSEEK_API_KEY → "deepseek", etc.)
+#   3. Normalize LLM_MODEL for direct providers (strip "models/" and
+#      "<provider>/" prefixes that the old UI used to suggest).
+#   4. Rewrite .env and regenerate config.yaml via server.py's helpers
+#      (single source of truth — same code path as the admin UI's save).
+python3 - <<'PYEOF'
+import sys
+sys.path.insert(0, "/app")
+from pathlib import Path
+from server import (
+    read_env, write_env, write_config_yaml,
+    ENV_FILE, PROVIDER_KEYS, PROVIDER_KEY_TO_ID,
+)
+
+data = read_env(ENV_FILE)
+changed = False
+
+# 1. Infer LLM_PROVIDER from which provider API key is set.
+if not data.get("LLM_PROVIDER"):
+    for key in PROVIDER_KEYS:
+        if data.get(key):
+            data["LLM_PROVIDER"] = PROVIDER_KEY_TO_ID.get(key, "auto")
+            changed = True
+            print(f"[migrate] LLM_PROVIDER not set — inferred '{data['LLM_PROVIDER']}' from {key}")
+            break
+
+# 2. Normalize LLM_MODEL for direct providers (Gemini, DeepSeek, etc.).
+provider = (data.get("LLM_PROVIDER") or "").strip()
+model = (data.get("LLM_MODEL") or "").strip()
+DIRECT_PROVIDERS = {"deepseek", "gemini", "zai", "dashscope", "minimax",
+                    "nvidia", "arcee", "stepfun", "kimi-coding"}
+if provider in DIRECT_PROVIDERS and model:
+    original = model
+    if model.startswith("models/"):
+        model = model.split("/", 1)[1]
+    if model.startswith(provider + "/"):
+        model = model[len(provider) + 1:]
+    if provider == "deepseek" and model.startswith("deepseek/"):
+        model = model.split("/", 1)[1]
+    if model != original:
+        data["LLM_MODEL"] = model
+        changed = True
+        print(f"[migrate] LLM_MODEL normalized: {original!r} → {model!r}")
+
+# 3. Persist .env (only if we changed something) and always regenerate
+#    config.yaml so it stays in sync with .env via the same code path
+#    used by the admin UI's save handler.
+if changed:
+    write_env(ENV_FILE, data)
+    print("[migrate] .env updated")
+write_config_yaml(data)
+print(f"[migrate] config.yaml regenerated — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
+PYEOF
+
 # Clear any stale gateway PID file left over from the previous container.
 # `hermes gateway` writes /data/.hermes/gateway.pid on start but does not
 # remove it on SIGTERM. Since /data is a persistent volume, the file
