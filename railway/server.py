@@ -80,6 +80,7 @@ else:
 # (key, label, category, is_secret)
 ENV_VARS = [
     ("LLM_MODEL",               "Model",                    "model",     False),
+    ("LLM_PROVIDER",            "Provider",                 "model",     False),
     ("OPENROUTER_API_KEY",       "OpenRouter",               "provider",  True),
     ("DEEPSEEK_API_KEY",         "DeepSeek",                 "provider",  True),
     ("DASHSCOPE_API_KEY",        "DashScope",                "provider",  True),
@@ -128,6 +129,20 @@ ENV_VARS = [
 
 SECRET_KEYS  = {k for k, _, _, s in ENV_VARS if s}
 PROVIDER_KEYS = [k for k, _, c, _ in ENV_VARS if c == "provider"]
+PROVIDER_KEY_TO_ID = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "DEEPSEEK_API_KEY": "deepseek",
+    "DASHSCOPE_API_KEY": "dashscope",
+    "GLM_API_KEY": "zai",
+    "KIMI_API_KEY": "kimi-coding",
+    "MINIMAX_API_KEY": "minimax",
+    "HF_TOKEN": "huggingface",
+    "NVIDIA_API_KEY": "nvidia",
+    "ARCEE_API_KEY": "arcee",
+    "STEPFUN_API_KEY": "stepfun",
+    "AI_GATEWAY_API_KEY": "ai-gateway",
+    "GEMINI_API_KEY": "gemini",
+}
 CHANNEL_MAP  = {
     "Telegram":    "TELEGRAM_BOT_TOKEN",
     "Discord":     "DISCORD_BOT_TOKEN",
@@ -158,13 +173,22 @@ def read_env(path: Path) -> dict[str, str]:
 
 def write_config_yaml(data: dict[str, str]) -> None:
     """Write a minimal config.yaml so hermes picks up the model and provider."""
-    model = data.get("LLM_MODEL", "")
+    provider = (data.get("LLM_PROVIDER", "") or "auto").strip() or "auto"
+    model = (data.get("LLM_MODEL", "") or "").strip()
+    # Direct providers expect native model IDs, not OpenRouter-style prefixes.
+    if provider in {"deepseek", "gemini", "zai", "dashscope", "minimax", "nvidia", "arcee", "stepfun"}:
+        if model.startswith("models/"):
+            model = model.split("/", 1)[1]
+        if model.startswith(provider + "/"):
+            model = model[len(provider) + 1:]
+        if provider == "deepseek" and model.startswith("deepseek/"):
+            model = model.split("/", 1)[1]
     config_path = Path(HERMES_HOME) / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(f"""\
 model:
   default: "{model}"
-  provider: "auto"
+  provider: "{provider}"
 
 terminal:
   backend: "local"
@@ -610,6 +634,11 @@ async def api_config_put(request: Request):
         async with cfg_lock:
             existing = read_env(ENV_FILE)
             merged = unmask(new_vars, existing)
+            if not merged.get("LLM_PROVIDER"):
+                for key in PROVIDER_KEYS:
+                    if merged.get(key):
+                        merged["LLM_PROVIDER"] = PROVIDER_KEY_TO_ID.get(key, "auto")
+                        break
             for k, v in existing.items():
                 if k not in merged:
                     merged[k] = v
