@@ -60,6 +60,12 @@ HERMES_DASHBOARD_HOST = "127.0.0.1"
 HERMES_DASHBOARD_PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "9119"))
 HERMES_DASHBOARD_URL = f"http://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}"
 
+# Hermes gateway HTTP API — exposes OpenAI-compatible /v1/* endpoints.
+# Proxied at /v1/* so hermes-workspace can reach it via the public Railway URL.
+HERMES_GATEWAY_HOST = "127.0.0.1"
+HERMES_GATEWAY_PORT = int(os.environ.get("HERMES_GATEWAY_PORT", "8642"))
+HERMES_GATEWAY_URL = f"http://{HERMES_GATEWAY_HOST}:{HERMES_GATEWAY_PORT}"
+
 # Mirror dashboard-ref-only/auth_proxy.py: strip only `host` (httpx sets it)
 # and `transfer-encoding` (httpx recomputes it from the body). Keep everything
 # else — notably `authorization`, because the SPA uses Bearer tokens against
@@ -935,6 +941,34 @@ async def _proxy_to_dashboard(request: Request) -> Response:
     )
 
 
+async def route_gateway_api(request: Request) -> Response:
+    """Proxy /v1/* to the hermes gateway HTTP API (port 8642).
+
+    Used by hermes-workspace to reach the OpenAI-compatible gateway API
+    without private networking. Auth is handled by the gateway's own
+    API_SERVER_KEY check (Bearer token in Authorization header).
+    No cookie auth here — workspace sends its own API_SERVER_KEY.
+    """
+    client = get_http_client()
+    target = f"{HERMES_GATEWAY_URL}{request.url.path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
+    body = await request.body()
+    try:
+        upstream = await client.request(request.method, target, headers=req_headers, content=body)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return JSONResponse({"error": "Gateway unavailable"}, status_code=503)
+    except httpx.RequestError as e:
+        print(f"[gateway-proxy] error for {request.method} {request.url.path}: {e}", flush=True)
+        return JSONResponse({"error": "Gateway error"}, status_code=502)
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in HOP_BY_HOP and k.lower() not in ("content-encoding", "content-length")
+    }
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=resp_headers)
+
+
 async def route_root(request: Request) -> Response:
     """GET /: first-visit smart redirect, otherwise proxy to the dashboard.
 
@@ -1174,6 +1208,9 @@ routes = [
     WebSocketRoute("/api/pty",                  ws_proxy),
     WebSocketRoute("/api/ws",                   ws_proxy),
     WebSocketRoute("/api/events",               ws_proxy),
+
+    # Gateway HTTP API proxy — for hermes-workspace (no cookie auth, uses API_SERVER_KEY).
+    Route("/v1/{path:path}",                    route_gateway_api,   methods=ANY_METHOD),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
