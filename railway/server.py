@@ -439,13 +439,18 @@ async def logout(request: Request) -> Response:
 
 
 # ── Gateway manager ───────────────────────────────────────────────────────────
+GATEWAY_WATCHDOG_SILENCE_SECS = int(os.environ.get("GATEWAY_WATCHDOG_SILENCE_SECS", "1200"))  # 20 min
+
+
 class Gateway:
     def __init__(self):
         self.proc: asyncio.subprocess.Process | None = None
         self.state = "stopped"
         self.logs: deque[str] = deque(maxlen=500)
         self.started_at: float | None = None
+        self.last_log_at: float | None = None
         self.restarts = 0
+        self._watchdog_task: asyncio.Task | None = None
 
     async def start(self):
         if self.proc and self.proc.returncode is None:
@@ -470,7 +475,10 @@ class Gateway:
             )
             self.state = "running"
             self.started_at = time.time()
+            self.last_log_at = time.time()
             asyncio.create_task(self._drain())
+            if self._watchdog_task is None or self._watchdog_task.done():
+                self._watchdog_task = asyncio.create_task(self._watchdog())
         except Exception as e:
             self.state = "error"
             self.logs.append(f"[error] Failed to start: {e}")
@@ -499,16 +507,43 @@ class Gateway:
         async for raw in self.proc.stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             self.logs.append(line)
+            self.last_log_at = time.time()
+        # Gateway process exited — auto-restart if it wasn't intentionally stopped.
         if self.state == "running":
+            rc = self.proc.returncode
             self.state = "error"
-            self.logs.append(f"[error] Gateway exited (code {self.proc.returncode})")
+            msg = f"[error] Gateway exited unexpectedly (code {rc}) — restarting in 5s"
+            self.logs.append(msg)
+            print(f"[gateway] {msg}", flush=True)
+            await asyncio.sleep(5)
+            self.restarts += 1
+            await self.start()
+
+    async def _watchdog(self):
+        """Restart gateway if it has been silent for too long (hung on a tool call)."""
+        while True:
+            await asyncio.sleep(60)
+            if self.state != "running" or self.last_log_at is None:
+                continue
+            silent_secs = time.time() - self.last_log_at
+            if silent_secs > GATEWAY_WATCHDOG_SILENCE_SECS:
+                msg = (
+                    f"[watchdog] Gateway silent for {int(silent_secs)}s "
+                    f"(>{GATEWAY_WATCHDOG_SILENCE_SECS}s threshold) — restarting"
+                )
+                self.logs.append(msg)
+                print(f"[gateway] {msg}", flush=True)
+                self.restarts += 1
+                await self.restart()
 
     def status(self) -> dict:
         uptime = int(time.time() - self.started_at) if self.started_at and self.state == "running" else None
+        silent = int(time.time() - self.last_log_at) if self.last_log_at and self.state == "running" else None
         return {
             "state":    self.state,
             "pid":      self.proc.pid if self.proc and self.proc.returncode is None else None,
             "uptime":   uptime,
+            "silent_secs": silent,
             "restarts": self.restarts,
         }
 
