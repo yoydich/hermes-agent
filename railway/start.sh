@@ -308,6 +308,33 @@ write_config_yaml(data)
 print(f"[migrate] config.yaml regenerated — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
 PYEOF
 
+# ── Volume cleanup ────────────────────────────────────────────────────────────
+# image_cache and audio_cache grow unbounded — delete files older than 30 days.
+find /data/.hermes/image_cache -type f -mtime +30 -delete 2>/dev/null || true
+find /data/.hermes/audio_cache -type f -mtime +30 -delete 2>/dev/null || true
+
+# Curator writes one run.json per cycle; keep only the 20 most recent to cap growth.
+curator_reports=(/data/.hermes/logs/curator/run_*.json)
+if [ ${#curator_reports[@]} -gt 20 ]; then
+  ls -t /data/.hermes/logs/curator/run_*.json 2>/dev/null | tail -n +21 | xargs rm -f
+fi
+
+# Checkpoint the SQLite WAL so reclaimed session space is released back to the OS.
+python3 - <<'PYEOF'
+import sqlite3, pathlib
+db = pathlib.Path("/data/.hermes/state.db")
+if db.exists():
+    try:
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        print("[cleanup] state.db WAL checkpoint done")
+    except Exception as e:
+        print(f"[cleanup] WAL checkpoint skipped: {e}")
+PYEOF
+
+echo "[cleanup] volume pruned: image_cache/audio_cache (>30d), curator logs (>20), WAL checkpoint"
+
 # Clear any stale gateway PID file left over from the previous container.
 # `hermes gateway` writes /data/.hermes/gateway.pid on start but does not
 # remove it on SIGTERM. Since /data is a persistent volume, the file

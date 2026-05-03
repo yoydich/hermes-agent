@@ -123,6 +123,13 @@ ENV_VARS = [
     ("MATRIX_ACCESS_TOKEN",      "Access Token",             "matrix",    True),
     ("MATRIX_USER_ID",           "User ID",                  "matrix",    False),
     ("GATEWAY_ALLOW_ALL_USERS",  "Allow all users",          "gateway",   False),
+    # API server — exposes an OpenAI-compatible HTTP API on port 8642 so that
+    # hermes-workspace (or any other client) can connect to the gateway.
+    # Set API_SERVER_ENABLED=true and API_SERVER_KEY=<secret> in Railway
+    # service variables, then use Railway private networking from other services.
+    ("API_SERVER_ENABLED",       "Enable API server",        "api",       False),
+    ("API_SERVER_HOST",          "API server host",          "api",       False),
+    ("API_SERVER_KEY",           "API server key",           "api",       True),
     ("ADMIN_USERNAME",           "Admin username",           "admin",     False),
     ("ADMIN_PASSWORD",           "Admin password",           "admin",     True),
 ]
