@@ -469,7 +469,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = 10
+        MAX_NETWORK_RETRIES = 30
         BASE_DELAY = 5
         MAX_DELAY = 60
 

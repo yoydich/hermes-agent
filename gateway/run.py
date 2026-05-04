@@ -1436,22 +1436,18 @@ class GatewayRunner:
                 logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
             await self.stop()
         elif not self.adapters and self._failed_platforms:
-            # All platforms are down and queued for background reconnection.
-            # If the error is retryable, exit with failure so systemd Restart=on-failure
-            # can restart the process. Otherwise stay alive and keep retrying in background.
-            if adapter.fatal_error_retryable:
-                self._exit_reason = adapter.fatal_error_message or "All messaging platforms failed with retryable errors"
-                self._exit_with_failure = True
-                logger.error(
-                    "All messaging platforms failed with retryable errors. "
-                    "Shutting down gateway for service restart (systemd will retry)."
-                )
-                await self.stop()
-            else:
-                logger.warning(
-                    "No connected messaging platforms remain, but %d platform(s) queued for reconnection",
-                    len(self._failed_platforms),
-                )
+            # All platforms are down but queued for background reconnection.
+            # Stay alive — the reconnect watcher handles retries regardless of whether
+            # the error is retryable or not.  Restarting the gateway here would kill
+            # active agent tasks for no benefit: the new process faces the same outage.
+            # Previously the retryable branch called self.stop() to let systemd restart,
+            # but on Railway (no systemd) this just interrupts running tasks and wastes
+            # the full container restart time.  The watcher retries up to 20×5min before
+            # giving up, which is far more user-friendly than an immediate kill.
+            logger.warning(
+                "No connected messaging platforms remain, but %d platform(s) queued for reconnection — staying alive",
+                len(self._failed_platforms),
+            )
 
     def _request_clean_exit(self, reason: str) -> None:
         self._exit_cleanly = True
