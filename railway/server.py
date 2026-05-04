@@ -533,13 +533,37 @@ class Gateway:
             await self.start()
 
     async def _watchdog(self):
-        """Restart gateway if it has been silent for too long (hung on a tool call)."""
+        """Restart gateway if it has been silent for too long (hung on a tool call).
+
+        Skips restart when active agents are running — silence is expected during
+        long LLM calls or tool execution. Only restart when truly idle and silent.
+        """
         while True:
             await asyncio.sleep(60)
             if self.state != "running" or self.last_log_at is None:
                 continue
             silent_secs = time.time() - self.last_log_at
             if silent_secs > GATEWAY_WATCHDOG_SILENCE_SECS:
+                # Check active_agents from gateway_state.json before killing.
+                # A long silent period is normal during LLM inference or tool calls.
+                active_agents = 0
+                try:
+                    import json as _json
+                    _status_path = Path(HERMES_HOME) / "gateway_state.json"
+                    if _status_path.exists():
+                        _status = _json.loads(_status_path.read_text())
+                        active_agents = int(_status.get("active_agents", 0))
+                except Exception:
+                    pass
+
+                if active_agents > 0:
+                    print(
+                        f"[watchdog] Gateway silent for {int(silent_secs)}s but "
+                        f"{active_agents} active agent(s) — skipping restart",
+                        flush=True,
+                    )
+                    continue
+
                 msg = (
                     f"[watchdog] Gateway silent for {int(silent_secs)}s "
                     f"(>{GATEWAY_WATCHDOG_SILENCE_SECS}s threshold) — restarting"
