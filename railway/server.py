@@ -452,7 +452,6 @@ async def logout(request: Request) -> Response:
 
 
 # ── Gateway manager ───────────────────────────────────────────────────────────
-GATEWAY_WATCHDOG_SILENCE_SECS = int(os.environ.get("GATEWAY_WATCHDOG_SILENCE_SECS", "1200"))  # 20 min
 
 
 class Gateway:
@@ -463,7 +462,6 @@ class Gateway:
         self.started_at: float | None = None
         self.last_log_at: float | None = None
         self.restarts = 0
-        self._watchdog_task: asyncio.Task | None = None
 
     async def start(self):
         if self.proc and self.proc.returncode is None:
@@ -490,8 +488,6 @@ class Gateway:
             self.started_at = time.time()
             self.last_log_at = time.time()
             asyncio.create_task(self._drain())
-            if self._watchdog_task is None or self._watchdog_task.done():
-                self._watchdog_task = asyncio.create_task(self._watchdog())
         except Exception as e:
             self.state = "error"
             self.logs.append(f"[error] Failed to start: {e}")
@@ -531,47 +527,6 @@ class Gateway:
             await asyncio.sleep(5)
             self.restarts += 1
             await self.start()
-
-    async def _watchdog(self):
-        """Restart gateway if it has been silent for too long (hung on a tool call).
-
-        Skips restart when active agents are running — silence is expected during
-        long LLM calls or tool execution. Only restart when truly idle and silent.
-        """
-        while True:
-            await asyncio.sleep(60)
-            if self.state != "running" or self.last_log_at is None:
-                continue
-            silent_secs = time.time() - self.last_log_at
-            if silent_secs > GATEWAY_WATCHDOG_SILENCE_SECS:
-                # Check active_agents from gateway_state.json before killing.
-                # A long silent period is normal during LLM inference or tool calls.
-                active_agents = 0
-                try:
-                    import json as _json
-                    _status_path = Path(HERMES_HOME) / "gateway_state.json"
-                    if _status_path.exists():
-                        _status = _json.loads(_status_path.read_text())
-                        active_agents = int(_status.get("active_agents", 0))
-                except Exception:
-                    pass
-
-                if active_agents > 0:
-                    print(
-                        f"[watchdog] Gateway silent for {int(silent_secs)}s but "
-                        f"{active_agents} active agent(s) — skipping restart",
-                        flush=True,
-                    )
-                    continue
-
-                msg = (
-                    f"[watchdog] Gateway silent for {int(silent_secs)}s "
-                    f"(>{GATEWAY_WATCHDOG_SILENCE_SECS}s threshold) — restarting"
-                )
-                self.logs.append(msg)
-                print(f"[gateway] {msg}", flush=True)
-                self.restarts += 1
-                await self.restart()
 
     def status(self) -> dict:
         uptime = int(time.time() - self.started_at) if self.started_at and self.state == "running" else None
