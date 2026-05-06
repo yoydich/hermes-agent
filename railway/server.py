@@ -303,7 +303,9 @@ from grid_dashboard import ROUTES as GRID_ROUTES
    298|COOKIE_SECRET = secrets.token_bytes(32)
    299|
    300|# Public paths — no auth required. Everything else is behind the cookie gate.
-   301|PUBLIC_PATHS = {"/health", "/login", "/logout"}
+   301|PUBLIC_PATHS = {"/health", "/login", "/logout", "/grid", "/grid/api/status",
+                 "/grid/api/pnl", "/grid/api/orders", "/grid/api/equity",
+                 "/grid/api/exit-reasons"}
    302|
    303|
    304|def _make_auth_token() -> str:
