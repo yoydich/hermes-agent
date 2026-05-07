@@ -342,6 +342,26 @@ def _is_authenticated(request: Request) -> bool:
     return _verify_auth_token(request.cookies.get(COOKIE_NAME, ""))
 
 
+def _get_api_server_key() -> str:
+    # Persisted Hermes env is the primary source of truth after setup saves.
+    return (read_env(ENV_FILE).get("API_SERVER_KEY") or os.environ.get("API_SERVER_KEY", "")).strip()
+
+
+def _has_valid_api_key(headers) -> bool:
+    expected = _get_api_server_key()
+    if not expected:
+        return False
+    auth = (headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token and secrets.compare_digest(token, expected):
+            return True
+    x_api_key = (headers.get("x-api-key") or "").strip()
+    if x_api_key and secrets.compare_digest(x_api_key, expected):
+        return True
+    return False
+
+
 def _safe_return_to(value: str) -> str:
     """Reject open-redirect attempts — only allow same-origin relative paths."""
     if not value or not value.startswith("/") or value.startswith("//"):
@@ -353,13 +373,15 @@ def _safe_return_to(value: str) -> str:
     return value
 
 
-def guard(request: Request) -> Response | None:
+def guard(request: Request, *, allow_api_key: bool = False) -> Response | None:
     """Enforce auth on protected routes.
 
     - HTML navigation: 302 to /login?returnTo=<path>
     - API / XHR: 401 JSON (so the SPA's fetch() can surface it cleanly)
     """
     if _is_authenticated(request):
+        return None
+    if allow_api_key and _has_valid_api_key(request.headers):
         return None
     accept = request.headers.get("accept", "").lower()
     wants_html = "text/html" in accept
@@ -987,7 +1009,11 @@ async def route_root(request: Request) -> Response:
 
 async def route_proxy(request: Request) -> Response:
     """Catch-all: forward any unmatched path to the Hermes dashboard."""
-    if err := guard(request): return err
+    allow_api_key = (
+        request.url.path.startswith("/api/")
+        or request.url.path.startswith("/dashboard-plugins/")
+    )
+    if err := guard(request, allow_api_key=allow_api_key): return err
     return await _proxy_to_dashboard(request)
 
 
@@ -1106,7 +1132,7 @@ async def ws_proxy(websocket: WebSocket) -> None:
          exits, etc.), cancel the other task and close both sockets
     """
     # 1. Edge auth.
-    if not _is_authenticated(websocket):
+    if not (_is_authenticated(websocket) or _has_valid_api_key(websocket.headers)):
         # Close before accept — browser sees the handshake fail (expected
         # for unauthenticated calls).
         await websocket.close(code=4401)
