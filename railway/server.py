@@ -220,6 +220,14 @@ terminal:
 agent:
   max_iterations: 50
 
+compression:
+  enabled: true
+
+session_reset:
+  mode: "idle"
+  idle_minutes: 10080
+  at_hour: 4
+
 data_dir: "{HERMES_HOME}"
 """)
 
