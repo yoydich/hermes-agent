@@ -1068,10 +1068,6 @@ def _list_memory_files() -> list[dict]:
     if meta:
         files.append(meta)
 
-    user_meta = _memory_file_meta("USER.md", builtin_dir / "USER.md")
-    if user_meta:
-        files.append(user_meta)
-
     seen = {item["path"] for item in files}
     for subdir in ("memory", "memories"):
         base = home / subdir
@@ -1079,6 +1075,8 @@ def _list_memory_files() -> list[dict]:
             continue
         for path_obj in base.rglob("*.md"):
             rel = path_obj.relative_to(home).as_posix()
+            if rel == "memories/MEMORY.md" and "MEMORY.md" in seen:
+                continue
             if rel in seen:
                 continue
             meta = _memory_file_meta(rel, path_obj)
