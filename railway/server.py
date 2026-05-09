@@ -895,6 +895,121 @@ It may still be starting up, or it may have crashed.</p>
 </body></html>""" % HERMES_DASHBOARD_PORT
 
 
+def _coerce_epoch_ms(value):
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number <= 0:
+        return None
+    return int(number * 1000) if number < 10_000_000_000 else int(number)
+
+
+def _workspace_session(session):
+    if not isinstance(session, dict):
+        return session
+
+    key = (
+        session.get("key")
+        or session.get("friendlyId")
+        or session.get("id")
+        or session.get("session_id")
+    )
+    started_at = _coerce_epoch_ms(
+        session.get("createdAt")
+        or session.get("startedAt")
+        or session.get("started_at")
+        or session.get("session_started")
+    )
+    updated_at = _coerce_epoch_ms(
+        session.get("updatedAt")
+        or session.get("lastActive")
+        or session.get("last_active")
+        or session.get("ended_at")
+        or session.get("started_at")
+    )
+    preview = (
+        session.get("preview")
+        or session.get("lastMessage")
+        or session.get("label")
+        or session.get("derivedTitle")
+        or ""
+    )
+    label = (
+        session.get("label")
+        or session.get("derivedTitle")
+        or session.get("title")
+        or preview
+        or key
+    )
+
+    normalized = dict(session)
+    normalized.update({
+        "id": session.get("id") or key,
+        "key": key,
+        "friendlyId": session.get("friendlyId") or key,
+        "label": label,
+        "derivedTitle": session.get("derivedTitle") or label,
+        "title": session.get("title") or label,
+        "titleSource": session.get("titleSource") or session.get("title_source") or "session",
+        "titleStatus": session.get("titleStatus") or session.get("title_status") or "idle",
+        "lastMessage": session.get("lastMessage") or preview or None,
+        "createdAt": started_at,
+        "updatedAt": updated_at or started_at,
+        "model": session.get("model"),
+        "messageCount": session.get("messageCount") or session.get("message_count") or 0,
+        "tokenCount": session.get("tokenCount") or session.get("token_count"),
+        "status": session.get("status") or ("active" if session.get("is_active") else "ready"),
+        "path": session.get("path"),
+        "metadata": session.get("metadata") or {},
+    })
+    return normalized
+
+
+def _normalize_workspace_sessions_response(request: Request, upstream: httpx.Response) -> bytes | None:
+    if request.method != "GET":
+        return None
+    if request.url.path not in {"/api/sessions", "/api/sessions/search"}:
+        return None
+    content_type = upstream.headers.get("content-type", "").lower()
+    if "json" not in content_type:
+        return None
+
+    try:
+        data = upstream.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    if request.url.path == "/api/sessions":
+        sessions = data.get("sessions")
+        if not isinstance(sessions, list):
+            sessions = data.get("items") if isinstance(data.get("items"), list) else []
+        normalized = [_workspace_session(s) for s in sessions]
+        out = dict(data)
+        out["sessions"] = normalized
+        out["items"] = normalized
+        out["data"] = normalized
+        out.setdefault("total", len(normalized))
+        out.setdefault("limit", len(normalized))
+        out.setdefault("offset", 0)
+        return json.dumps(out).encode("utf-8")
+
+    results = data.get("results")
+    if not isinstance(results, list):
+        results = data.get("sessions") if isinstance(data.get("sessions"), list) else []
+    normalized = [_workspace_session(s) for s in results]
+    out = dict(data)
+    out["results"] = normalized
+    out["sessions"] = normalized
+    out["items"] = normalized
+    out["data"] = normalized
+    return json.dumps(out).encode("utf-8")
+
+
 async def _proxy_to_dashboard(request: Request) -> Response:
     """Forward an authenticated request to the Hermes dashboard subprocess.
 
@@ -946,6 +1061,12 @@ async def _proxy_to_dashboard(request: Request) -> Response:
     content_type = upstream.headers.get("content-type", "").lower()
 
     # Inject the "← Setup" widget into HTML pages so users can always return.
+    normalized_content = _normalize_workspace_sessions_response(request, upstream)
+    if normalized_content is not None:
+        content = normalized_content
+        content_type = "application/json"
+        resp_headers["content-type"] = "application/json"
+
     if "text/html" in content_type and b"</body>" in content:
         try:
             text = content.decode("utf-8", errors="replace")
