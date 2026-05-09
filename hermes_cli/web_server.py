@@ -130,9 +130,30 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), expected.encode())
 
 
+def _has_valid_api_server_key(request: Request) -> bool:
+    """True when a server-to-server request carries the Hermes API key.
+
+    Railway's workspace service calls dashboard APIs through the admin proxy.
+    Those calls cannot know the browser-only ephemeral dashboard session token,
+    but they already share API_SERVER_KEY with the gateway /v1 API.
+    """
+    expected = (load_env().get("API_SERVER_KEY") or os.getenv("API_SERVER_KEY", "")).strip()
+    if not expected:
+        return False
+
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token and hmac.compare_digest(token.encode(), expected.encode()):
+            return True
+
+    api_key = request.headers.get("x-api-key", "").strip()
+    return bool(api_key and hmac.compare_digest(api_key.encode(), expected.encode()))
+
+
 def _require_token(request: Request) -> None:
     """Validate the ephemeral session token.  Raises 401 on mismatch."""
-    if not _has_valid_session_token(request):
+    if not (_has_valid_session_token(request) or _has_valid_api_server_key(request)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -226,7 +247,7 @@ async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
-        if not _has_valid_session_token(request):
+        if not (_has_valid_session_token(request) or _has_valid_api_server_key(request)):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},

@@ -32,8 +32,68 @@ RUN apt-get update && \
 # Deleting web/ afterwards makes hermes's internal _build_web_ui skip the
 # rebuild step (it early-returns when package.json is absent), so container
 # startup is fast and no runtime npm dependency is needed.
-RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
-    cd /opt/hermes-agent && \
+RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
+
+RUN python3 - <<'PY'
+from pathlib import Path
+
+path = Path("/opt/hermes-agent/hermes_cli/web_server.py")
+text = path.read_text()
+
+needle = '''def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    if not _has_valid_session_token(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+'''
+
+replacement = '''def _has_valid_api_server_key(request: Request) -> bool:
+    """True when a server-to-server request carries the Hermes API key."""
+    expected = (load_env().get("API_SERVER_KEY") or os.getenv("API_SERVER_KEY", "")).strip()
+    if not expected:
+        return False
+
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token and hmac.compare_digest(token.encode(), expected.encode()):
+            return True
+
+    api_key = request.headers.get("x-api-key", "").strip()
+    return bool(api_key and hmac.compare_digest(api_key.encode(), expected.encode()))
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    if not (_has_valid_session_token(request) or _has_valid_api_server_key(request)):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+'''
+
+if needle not in text:
+    raise SystemExit("web_server.py token helper patch target not found")
+text = text.replace(needle, replacement)
+
+needle = '''        if not _has_valid_session_token(request):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+'''
+
+replacement = '''        if not (_has_valid_session_token(request) or _has_valid_api_server_key(request)):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+'''
+
+if needle not in text:
+    raise SystemExit("web_server.py auth middleware patch target not found")
+text = text.replace(needle, replacement, 1)
+
+path.write_text(text)
+PY
+
+RUN cd /opt/hermes-agent && \
     uv pip install --system --no-cache -e ".[all]" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
