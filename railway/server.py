@@ -1010,6 +1010,164 @@ def _normalize_workspace_sessions_response(request: Request, upstream: httpx.Res
     return json.dumps(out).encode("utf-8")
 
 
+def _memory_roots() -> tuple[Path, Path]:
+    home = Path(HERMES_HOME)
+    return home, home / "memories"
+
+
+def _safe_memory_path(relative_path: str) -> tuple[str, Path]:
+    rel = relative_path.replace("\\", "/").strip()
+    if not rel:
+        raise ValueError("Path is required")
+    if rel.startswith("/") or ".." in rel.split("/"):
+        raise ValueError("Invalid memory path")
+    if not rel.lower().endswith(".md"):
+        raise ValueError("Only Markdown memory files are allowed")
+
+    home, builtin_dir = _memory_roots()
+    if rel == "MEMORY.md":
+        builtin_memory = builtin_dir / "MEMORY.md"
+        return rel, builtin_memory if builtin_memory.exists() else home / "MEMORY.md"
+    if rel == "USER.md":
+        return rel, builtin_dir / "USER.md"
+
+    root = home
+    full_path = (root / rel).resolve()
+    root_resolved = root.resolve()
+    if not str(full_path).startswith(str(root_resolved)):
+        raise ValueError("Resolved path is outside memory root")
+    allowed = rel.startswith("memory/") or rel.startswith("memories/")
+    if not allowed:
+        raise ValueError("Only MEMORY.md, USER.md, memory/*.md, and memories/*.md are allowed")
+    return rel, full_path
+
+
+def _memory_file_meta(display_path: str, full_path: Path) -> dict | None:
+    try:
+        stat = full_path.stat()
+    except OSError:
+        return None
+    if not full_path.is_file() or not full_path.name.lower().endswith(".md"):
+        return None
+    return {
+        "path": display_path,
+        "name": full_path.name,
+        "size": stat.st_size,
+        "modified": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+    }
+
+
+def _list_memory_files() -> list[dict]:
+    home, builtin_dir = _memory_roots()
+    files: list[dict] = []
+
+    root_memory = builtin_dir / "MEMORY.md"
+    if not root_memory.exists():
+        root_memory = home / "MEMORY.md"
+    meta = _memory_file_meta("MEMORY.md", root_memory)
+    if meta:
+        files.append(meta)
+
+    user_meta = _memory_file_meta("USER.md", builtin_dir / "USER.md")
+    if user_meta:
+        files.append(user_meta)
+
+    seen = {item["path"] for item in files}
+    for subdir in ("memory", "memories"):
+        base = home / subdir
+        if not base.exists():
+            continue
+        for path_obj in base.rglob("*.md"):
+            rel = path_obj.relative_to(home).as_posix()
+            if rel in seen:
+                continue
+            meta = _memory_file_meta(rel, path_obj)
+            if meta:
+                files.append(meta)
+                seen.add(rel)
+
+    def sort_key(item: dict):
+        path_value = item.get("path", "")
+        if path_value == "MEMORY.md":
+            return (0, "")
+        if path_value == "USER.md":
+            return (1, "")
+        return (2, path_value)
+
+    return sorted(files, key=sort_key)
+
+
+async def route_memory_list(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    return JSONResponse({"files": _list_memory_files()})
+
+
+async def route_memory_summary(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    memories = []
+    for file_meta in _list_memory_files():
+        try:
+            _, full_path = _safe_memory_path(file_meta["path"])
+            content = full_path.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+        memories.append({**file_meta, "content": content})
+    return JSONResponse({"ok": True, "files": memories})
+
+
+async def route_memory_read(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    try:
+        rel, full_path = _safe_memory_path(request.query_params.get("path", ""))
+        return JSONResponse({"path": rel, "content": full_path.read_text(encoding="utf-8")})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Memory file not found"}, status_code=404)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def route_memory_search(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    query = request.query_params.get("q", "").strip().lower()
+    if not query:
+        return JSONResponse({"results": []})
+    results = []
+    for file_meta in _list_memory_files():
+        try:
+            _, full_path = _safe_memory_path(file_meta["path"])
+            lines = full_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for idx, line in enumerate(lines, start=1):
+            if query in line.lower():
+                results.append({"path": file_meta["path"], "line": idx, "text": line})
+                if len(results) >= 200:
+                    return JSONResponse({"results": results})
+    return JSONResponse({"results": results})
+
+
+async def route_memory_write(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    try:
+        rel, full_path = _safe_memory_path(str(body.get("path") or ""))
+        content = body.get("content")
+        if not isinstance(content, str):
+            content = ""
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+        return JSONResponse({"success": True, "path": rel})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def _proxy_to_dashboard(request: Request) -> Response:
     """Forward an authenticated request to the Hermes dashboard subprocess.
 
@@ -1357,6 +1515,14 @@ routes = [
     # Gateway HTTP API proxy — for hermes-workspace (no cookie auth, uses API_SERVER_KEY).
     Route("/v1/{path:path}",                    route_gateway_api,   methods=ANY_METHOD),
     *GRID_ROUTES,
+
+    # Remote memory browser API for hermes-workspace when Agent and Workspace
+    # run as separate Railway services without a shared filesystem volume.
+    Route("/api/memory",                        route_memory_summary, methods=["GET"]),
+    Route("/api/memory/list",                   route_memory_list,   methods=["GET"]),
+    Route("/api/memory/read",                   route_memory_read,   methods=["GET"]),
+    Route("/api/memory/search",                 route_memory_search, methods=["GET"]),
+    Route("/api/memory/write",                  route_memory_write,  methods=["POST"]),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
