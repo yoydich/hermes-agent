@@ -118,9 +118,10 @@ set -eu
 export HERMES_HOME="${HERMES_HOME:-/tmp/.hermes}"
 mkdir -p "$HERMES_HOME/memory" "$HERMES_HOME/memories"
 node /usr/local/bin/hermes-memory-sync.mjs &
-exec "$@"
+exec /usr/bin/tini -- "$@"
 EOF
 
 RUN chmod +x /usr/local/bin/hermes-workspace-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/hermes-workspace-entrypoint.sh"]
+CMD ["node", "--max-old-space-size=2048", "server-entry.js"]
