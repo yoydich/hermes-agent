@@ -7336,8 +7336,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"  ⚠ Currently on {label} — switching to main for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # Use -B so this works even when no local 'main' branch exists
+            # (e.g. Railway / Docker deployments start on a detached HEAD with
+            # no local branches at all — plain 'checkout main' exits 1 there).
             subprocess.run(
-                git_cmd + ["checkout", "main"],
+                git_cmd + ["checkout", "-B", "main", "origin/main"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
