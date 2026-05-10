@@ -1095,6 +1095,114 @@ def _list_memory_files() -> list[dict]:
     return sorted(files, key=sort_key)
 
 
+CONTEXT_FILE_NAMES = ("SOUL.md", "AGENTS.md", ".hermes.md", "CLAUDE.md", ".cursorrules")
+
+
+def _context_roots() -> tuple[Path, Path]:
+    return Path(HERMES_HOME), Path(os.environ.get("TERMINAL_CWD", "/tmp"))
+
+
+def _safe_context_path(relative_path: str) -> tuple[str, Path]:
+    rel = relative_path.replace("\\", "/").strip()
+    if rel not in CONTEXT_FILE_NAMES:
+        raise ValueError("Unsupported context file")
+    hermes_home, cwd = _context_roots()
+    if rel == "SOUL.md":
+        return rel, hermes_home / "SOUL.md"
+    return rel, cwd / rel
+
+
+def _context_file_meta(display_path: str, full_path: Path, scope: str) -> dict | None:
+    try:
+        stat = full_path.stat()
+    except OSError:
+        return None
+    if not full_path.is_file():
+        return None
+    return {
+        "path": display_path,
+        "name": full_path.name,
+        "scope": scope,
+        "size": stat.st_size,
+        "modified": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+    }
+
+
+def _list_context_files() -> list[dict]:
+    hermes_home, cwd = _context_roots()
+    specs = [
+        ("SOUL.md", hermes_home / "SOUL.md", "identity"),
+        ("AGENTS.md", cwd / "AGENTS.md", "project"),
+        (".hermes.md", cwd / ".hermes.md", "project"),
+        ("CLAUDE.md", cwd / "CLAUDE.md", "project"),
+        (".cursorrules", cwd / ".cursorrules", "project"),
+    ]
+    files = []
+    for display_path, full_path, scope in specs:
+        meta = _context_file_meta(display_path, full_path, scope)
+        if meta:
+            files.append(meta)
+    return files
+
+
+async def route_context_files_list(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    return JSONResponse({"files": _list_context_files()})
+
+
+async def route_context_files_read(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    try:
+        rel, full_path = _safe_context_path(request.query_params.get("path", ""))
+        return JSONResponse({"path": rel, "content": full_path.read_text(encoding="utf-8")})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Context file not found"}, status_code=404)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def route_context_files_search(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    query = request.query_params.get("q", "").strip().lower()
+    if not query:
+        return JSONResponse({"results": []})
+    results = []
+    for file_meta in _list_context_files():
+        try:
+            _, full_path = _safe_context_path(file_meta["path"])
+            lines = full_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for idx, line in enumerate(lines, start=1):
+            if query in line.lower():
+                results.append({"path": file_meta["path"], "line": idx, "text": line})
+                if len(results) >= 200:
+                    return JSONResponse({"results": results})
+    return JSONResponse({"results": results})
+
+
+async def route_context_files_write(request: Request) -> Response:
+    if err := guard(request, allow_api_key=True): return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    try:
+        rel, full_path = _safe_context_path(str(body.get("path") or ""))
+        content = body.get("content")
+        if not isinstance(content, str):
+            content = ""
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+        return JSONResponse({"success": True, "path": rel})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def route_memory_list(request: Request) -> Response:
     if err := guard(request, allow_api_key=True): return err
     return JSONResponse({"files": _list_memory_files()})
@@ -1521,6 +1629,10 @@ routes = [
     Route("/api/memory/read",                   route_memory_read,   methods=["GET"]),
     Route("/api/memory/search",                 route_memory_search, methods=["GET"]),
     Route("/api/memory/write",                  route_memory_write,  methods=["POST"]),
+    Route("/api/context-files/list",            route_context_files_list,   methods=["GET"]),
+    Route("/api/context-files/read",            route_context_files_read,   methods=["GET"]),
+    Route("/api/context-files/search",          route_context_files_search, methods=["GET"]),
+    Route("/api/context-files/write",           route_context_files_write,  methods=["POST"]),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
