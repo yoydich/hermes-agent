@@ -1,14 +1,13 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Which hermes-agent revision to install. Accepts any git ref the upstream
+# Which hermes-agent revision to install. Accepts any git ref the source
 # repo publishes — a release tag (recommended for reproducibility) or a
 # branch name (`main`) for bleeding edge.
 #
-# To bump: check https://github.com/NousResearch/hermes-agent/releases for the
-# newest tag (format `vYYYY.M.D`, e.g. `v2026.4.23`) and update the default
-# below. Use `main` only if you accept that every rebuild can pull arbitrary
-# new upstream commits.
-ARG HERMES_REF=v2026.4.30
+# Source repo: yoydich/hermes-agent (fork with personal fixes for this
+# Railway deployment). To bump or rebase, push to that fork's `main`.
+ARG HERMES_REF=main
+ARG HERMES_REPO=https://github.com/yoydich/hermes-agent.git
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -32,7 +31,7 @@ RUN apt-get update && \
 # Deleting web/ afterwards makes hermes's internal _build_web_ui skip the
 # rebuild step (it early-returns when package.json is absent), so container
 # startup is fast and no runtime npm dependency is needed.
-RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
+RUN git clone --depth 1 --branch ${HERMES_REF} ${HERMES_REPO} /opt/hermes-agent
 
 RUN python3 - <<'PY'
 from pathlib import Path
@@ -101,7 +100,15 @@ RUN cd /opt/hermes-agent && \
     cd /opt/hermes-agent/ui-tui && \
     npm install --silent --no-fund --no-audit --progress=false && \
     npm run build && \
-    rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm
+    rm -rf /opt/hermes-agent/web /root/.npm
+
+# Keep /opt/hermes-agent/.git so the in-app "Update" button (which runs
+# `git fetch origin` + `git checkout -B main origin/main` + `git pull`)
+# can pull new commits at runtime. Convert the shallow clone to a full
+# clone so fetch works without `--unshallow` on every update.
+RUN cd /opt/hermes-agent && \
+    git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && \
+    git fetch --unshallow origin || true
 
 # Why pre-build ui-tui (and why we don't delete it after):
 # - The dashboard's embedded Chat tab spawns `node ui-tui/dist/entry.js`
