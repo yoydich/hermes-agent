@@ -425,4 +425,11 @@ echo "[cleanup] volume pruned: image_cache/audio_cache (>30d), curator logs (>20
 # container), so removing the file unconditionally is safe.
 rm -f /data/.hermes/gateway.pid
 
+# ── Grid Bot auto-start ───────────────────────────────────────────────────────
+# If start_grid_bot.sh exists on the persistent volume, run it. This survives
+# deploys — edit /data/start_grid_bot.sh to change what gets started.
+if [ -f /data/start_grid_bot.sh ]; then
+  bash /data/start_grid_bot.sh
+fi
+
 exec python /app/server.py
