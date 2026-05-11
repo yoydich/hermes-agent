@@ -1542,7 +1542,16 @@ async def ws_proxy(websocket: WebSocket) -> None:
     except (asyncio.TimeoutError, OSError, websockets.exceptions.WebSocketException) as e:
         # Hermes dashboard down, restarting, or rejected the upgrade
         # (e.g. bad/missing session token).
-        print(f"[ws-proxy] upstream connect failed for {path}: {e!r}", flush=True)
+        msg = f"[ws-proxy] upstream connect failed for {path}: {type(e).__name__}: {e!r}"
+        print(msg, flush=True)
+        # Also surface to the in-memory gateway logs so /setup/api/logs
+        # picks it up — Railway's stdout-only [ws-proxy] lines are hard to
+        # retrieve without a Railway token, but this buffer is reachable
+        # via the dashboard's auth-gated logs API.
+        try:
+            gw.logs.append(msg)
+        except Exception:
+            pass
         # 1011 = internal error; client SPA will surface a generic close.
         await websocket.close(code=1011)
         return
