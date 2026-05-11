@@ -33,6 +33,19 @@ RUN apt-get update && \
 # startup is fast and no runtime npm dependency is needed.
 RUN git clone --depth 1 --branch ${HERMES_REF} ${HERMES_REPO} /opt/hermes-agent
 
+# Cache-bust: Railway sets RAILWAY_GIT_COMMIT_SHA per build, so this ARG
+# changes every commit and invalidates every layer below it. Without
+# this, Docker keeps reusing the `git clone` layer from the first build
+# and /opt/hermes-agent never reflects new commits — only files inserted
+# via COPY get refreshed. With this ARG in place, every push pulls the
+# latest tip of HERMES_REF and reinstalls deps, so docker/SOUL.md,
+# AGENTS.md, hermes_cli/, etc. always match the pushed commit.
+ARG RAILWAY_GIT_COMMIT_SHA=unknown
+RUN cd /opt/hermes-agent && \
+    git fetch origin ${HERMES_REF} && \
+    git reset --hard origin/${HERMES_REF} && \
+    echo "Refreshed /opt/hermes-agent to ${RAILWAY_GIT_COMMIT_SHA} (origin/${HERMES_REF})"
+
 # NOTE: The previous version of this Dockerfile (when HERMES_REPO pointed
 # at upstream NousResearch/hermes-agent) ran an inline `web_server.py`
 # patch here to add `_has_valid_api_server_key` for API-key-based auth.
