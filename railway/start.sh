@@ -16,9 +16,137 @@ fi
 
 [ ! -f /data/.hermes/.env ] && touch /data/.hermes/.env
 
-# SOUL.md is copied from the repo on every container start so the latest
-# identity rules always win.  Edit docker/SOUL.md in the repo to customize.
-cp /opt/hermes-agent/docker/SOUL.md /data/.hermes/SOUL.md
+# ── Sync secrets from Railway env vars ────────────────────────────────────────
+# Railway injects environment variables directly into the container.  We write
+# them into /data/.hermes/.env so that hermes's credential pool picks them up
+# via the normal read_env() path.  This is the single source of truth — edit
+# secrets in the Railway dashboard, NOT in the .env file on disk.
+#
+# Every variable listed here is written ONLY if it is set in the environment
+# AND the current .env file does NOT already contain a non-empty value for it.
+# This means: once a secret is set in .env (e.g. from a previous run), it
+# won't be overwritten by an empty Railway var on a redeploy that omits it.
+#
+# To force a refresh: unset the variable in Railway (or set it to empty),
+# redeploy, then set it again and redeploy once more.
+
+_RAILWAY_ENV_VARS=(
+  # LLM providers
+  OPENROUTER_API_KEY
+  DEEPSEEK_API_KEY
+  DASHSCOPE_API_KEY
+  GLM_API_KEY
+  KIMI_API_KEY
+  MINIMAX_API_KEY
+  HF_TOKEN
+  NVIDIA_API_KEY
+  ARCEE_API_KEY
+  STEPFUN_API_KEY
+  AI_GATEWAY_API_KEY
+  GEMINI_API_KEY
+  GROQ_API_KEY
+  GOOGLE_API_KEY
+  KIMI_CN_API_KEY
+  # Tools
+  FAL_KEY
+  GITHUB_TOKEN
+  GH_TOKEN
+  TELEGRAM_BOT_TOKEN
+  TELEGRAM_ALLOWED_USERS
+  TELEGRAM_HOME_CHANNEL
+  EMAIL_ADDRESS
+  EMAIL_PASSWORD
+  # Gateway
+  GATEWAY_ALLOW_ALL_USERS
+  HERMES_DASHBOARD_PORT
+  API_SERVER_PORT
+  BASH_ENV
+)
+
+# Read current .env into a temp file, merge Railway vars, write back.
+python3 - <<'PYEOF'
+import os
+from pathlib import Path
+
+env_file = Path("/data/.hermes/.env")
+railway_vars = [
+    "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY",
+    "GLM_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY", "HF_TOKEN",
+    "NVIDIA_API_KEY", "ARCEE_API_KEY", "STEPFUN_API_KEY",
+    "AI_GATEWAY_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+    "GOOGLE_API_KEY", "KIMI_CN_API_KEY",
+    "FAL_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL",
+    "EMAIL_ADDRESS", "EMAIL_PASSWORD",
+    "GATEWAY_ALLOW_ALL_USERS", "HERMES_DASHBOARD_PORT", "API_SERVER_PORT",
+    "BASH_ENV",
+]
+
+# Read existing .env
+existing = {}
+if env_file.exists():
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        v = v.strip().strip('"').strip("'")
+        existing[k.strip()] = v
+
+# Merge: Railway env var wins if non-empty AND existing is empty/missing
+changed = False
+for var in railway_vars:
+    railway_val = os.environ.get(var, "").strip()
+    if not railway_val:
+        continue  # Railway doesn't have it — skip
+    current = existing.get(var, "")
+    if current:
+        # Already set in .env — don't overwrite (user may have edited manually)
+        continue
+    existing[var] = railway_val
+    changed = True
+    print(f"[env-sync] {var} written from Railway")
+
+# Write back
+lines = []
+for k, v in existing.items():
+    # Quote values that contain spaces or special chars
+    if " " in v or any(c in v for c in "'\"#$"):
+        v = f'"{v}"'
+    lines.append(f"{k}={v}")
+env_file.write_text("\n".join(lines) + "\n")
+if changed:
+    print(f"[env-sync] {env_file} updated with Railway secrets")
+else:
+    print(f"[env-sync] {env_file} already in sync")
+PYEOF
+
+# SOUL.md and AGENTS.md are ALWAYS overwritten on container start from the
+# repo (docker/SOUL.md, AGENTS.md). The volume is persistent across
+# redeploys, so a stale copy from an older deployment would otherwise stick
+# forever — overwriting on every boot guarantees the version committed to
+# the fork (yoydich/hermes-agent) wins. To customize, edit the file in the
+# repo and push; the next Railway build will pick it up.
+HERMES_SRC=/opt/hermes-agent
+
+if [ -f "$HERMES_SRC/docker/SOUL.md" ]; then
+    cp "$HERMES_SRC/docker/SOUL.md" /data/.hermes/SOUL.md
+    echo "[seed] SOUL.md synced from repo (docker/SOUL.md)"
+else
+    echo "[seed] WARN: $HERMES_SRC/docker/SOUL.md missing — SOUL.md left as-is"
+fi
+
+# AGENTS.md → /data/.hermes/AGENTS.md (visible in dashboard Files tab) AND
+# /tmp/AGENTS.md (the terminal CWD where the agent process looks for it
+# via context-file resolution). Copying to both keeps the dashboard and
+# the runtime agent in sync.
+if [ -f "$HERMES_SRC/AGENTS.md" ]; then
+    cp "$HERMES_SRC/AGENTS.md" /data/.hermes/AGENTS.md
+    mkdir -p /tmp && cp "$HERMES_SRC/AGENTS.md" /tmp/AGENTS.md
+    echo "[seed] AGENTS.md synced from repo to /data/.hermes/ and /tmp/"
+else
+    echo "[seed] WARN: $HERMES_SRC/AGENTS.md missing — AGENTS.md left as-is"
+fi
 
 # ── First-run seeding ────────────────────────────────────────────────────────
 # These files seed personal context, durable memory, and starter skills on
