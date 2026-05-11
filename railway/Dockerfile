@@ -86,13 +86,21 @@ if needle in text and inject not in text:
     )
     text = text.replace(
         '    if not _ws_client_is_allowed(ws):\n        await ws.close(code=4403)\n        return\n\n    await ws.accept()\n',
-        '    print("[pty_ws] before client_is_allowed", flush=True, file=sys.stderr)\n'
+        '    print(f"[pty_ws][{__import__(\"time\").monotonic():.3f}] before client_is_allowed", flush=True, file=sys.stderr)\n'
         '    if not _ws_client_is_allowed(ws):\n'
         '        await ws.close(code=4403)\n'
         '        return\n'
-        '    print("[pty_ws] before accept", flush=True, file=sys.stderr)\n'
+        '    print(f"[pty_ws][{__import__(\"time\").monotonic():.3f}] before accept", flush=True, file=sys.stderr)\n'
         '    await ws.accept()\n'
-        '    print("[pty_ws] accepted", flush=True, file=sys.stderr)\n',
+        '    print(f"[pty_ws][{__import__(\"time\").monotonic():.3f}] accepted, yielding to event loop", flush=True, file=sys.stderr)\n'
+        '    # Yield once so uvicorn flushes the 101 Switching Protocols\n'
+        '    # response into the TCP socket before this handler does any\n'
+        '    # more sync work.  Without this, the proxy can time out\n'
+        '    # waiting for the handshake to complete even though accept()\n'
+        '    # already finished on this side.\n'
+        '    import asyncio as _asyncio_local\n'
+        '    await _asyncio_local.sleep(0)\n'
+        '    print(f"[pty_ws][{__import__(\"time\").monotonic():.3f}] after sleep(0)", flush=True, file=sys.stderr)\n',
         1,
     )
     # Trace post-accept blocking points.  Inserted between `accepted`
