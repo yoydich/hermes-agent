@@ -739,6 +739,18 @@ async def api_logs(request: Request):
     return JSONResponse({"lines": list(gw.logs)})
 
 
+async def api_dash_logs(request: Request):
+    """Return the buffered output of the hermes dashboard subprocess.
+
+    Use this to surface subprocess prints (e.g. the [pty_ws] diagnostic
+    trace) without needing a Railway token. The buffer is the same deque
+    the Dashboard class fills via _drain, so lines may include both
+    stdout and stderr (we redirect stderr→stdout when spawning).
+    """
+    if err := guard(request): return err
+    return JSONResponse({"lines": list(dash.logs)})
+
+
 async def api_gw_start(request: Request):
     if err := guard(request): return err
     asyncio.create_task(gw.start())
@@ -1604,6 +1616,7 @@ routes = [
     Route("/setup/api/config",                  api_config_put,      methods=["PUT"]),
     Route("/setup/api/status",                  api_status),
     Route("/setup/api/logs",                    api_logs),
+    Route("/setup/api/dashboard-logs",          api_dash_logs),
     Route("/setup/api/gateway/start",           api_gw_start,        methods=["POST"]),
     Route("/setup/api/gateway/stop",            api_gw_stop,         methods=["POST"]),
     Route("/setup/api/gateway/restart",         api_gw_restart,      methods=["POST"]),

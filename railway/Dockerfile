@@ -46,13 +46,60 @@ RUN cd /opt/hermes-agent && \
     git reset --hard origin/${HERMES_REF} && \
     echo "Refreshed /opt/hermes-agent to ${RAILWAY_GIT_COMMIT_SHA} (origin/${HERMES_REF})"
 
-# NOTE: The previous version of this Dockerfile (when HERMES_REPO pointed
-# at upstream NousResearch/hermes-agent) ran an inline `web_server.py`
-# patch here to add `_has_valid_api_server_key` for API-key-based auth.
-# The yoydich fork already ships that helper natively, so the patch
-# would fail with "token helper patch target not found" and crash the
-# build. The patch block is therefore removed — keep the fork as the
-# single source of truth for any future web_server.py changes.
+# Diagnostic: trace every step of pty_ws() so we can pinpoint where the
+# /api/pty WebSocket handshake stalls. The proxy reports
+# "TimeoutError('timed out during opening handshake')" without saying
+# which line of the upstream handler took >5s.  Sprinkle stderr prints
+# (which Railway captures into the [dashboard] log stream) right before
+# each await/blocking call so the bottleneck shows up by elimination.
+# Remove this block once the root cause is known.
+RUN python3 - <<'PY'
+from pathlib import Path
+path = Path("/opt/hermes-agent/hermes_cli/web_server.py")
+text = path.read_text()
+needle = '@app.websocket("/api/pty")\nasync def pty_ws(ws: WebSocket) -> None:\n'
+inject = (
+    '@app.websocket("/api/pty")\n'
+    'async def pty_ws(ws: WebSocket) -> None:\n'
+    '    import sys\n'
+    '    print("[pty_ws] enter", flush=True, file=sys.stderr)\n'
+)
+if needle in text and inject not in text:
+    text = text.replace(needle, inject, 1)
+    # Trace each pre-accept step.
+    text = text.replace(
+        '    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:\n        await ws.close(code=4403)\n        return\n\n    # --- auth + loopback check',
+        '    print(f"[pty_ws] embedded={_DASHBOARD_EMBEDDED_CHAT_ENABLED}", flush=True, file=sys.stderr)\n'
+        '    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:\n'
+        '        await ws.close(code=4403)\n'
+        '        return\n\n'
+        '    # --- auth + loopback check',
+        1,
+    )
+    text = text.replace(
+        '    token = ws.query_params.get("token", "")\n    expected = _SESSION_TOKEN\n',
+        '    print("[pty_ws] read query_params", flush=True, file=sys.stderr)\n'
+        '    token = ws.query_params.get("token", "")\n'
+        '    expected = _SESSION_TOKEN\n'
+        '    print(f"[pty_ws] token_ok={bool(token) and hmac.compare_digest(token.encode(), expected.encode())}", flush=True, file=sys.stderr)\n',
+        1,
+    )
+    text = text.replace(
+        '    if not _ws_client_is_allowed(ws):\n        await ws.close(code=4403)\n        return\n\n    await ws.accept()\n',
+        '    print("[pty_ws] before client_is_allowed", flush=True, file=sys.stderr)\n'
+        '    if not _ws_client_is_allowed(ws):\n'
+        '        await ws.close(code=4403)\n'
+        '        return\n'
+        '    print("[pty_ws] before accept", flush=True, file=sys.stderr)\n'
+        '    await ws.accept()\n'
+        '    print("[pty_ws] accepted", flush=True, file=sys.stderr)\n',
+        1,
+    )
+    path.write_text(text)
+    print("Patched pty_ws with diagnostics")
+else:
+    print("WARN: pty_ws patch target not found or already applied")
+PY
 
 RUN uv venv /opt/hermes-agent/venv && \
     cd /opt/hermes-agent && \
