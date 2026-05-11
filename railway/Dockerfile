@@ -41,8 +41,9 @@ RUN git clone --depth 1 --branch ${HERMES_REF} ${HERMES_REPO} /opt/hermes-agent
 # build. The patch block is therefore removed — keep the fork as the
 # single source of truth for any future web_server.py changes.
 
-RUN cd /opt/hermes-agent && \
-    uv pip install --system --no-cache -e ".[all]" && \
+RUN uv venv /opt/hermes-agent/venv && \
+    cd /opt/hermes-agent && \
+    uv pip install --python /opt/hermes-agent/venv/bin/python --no-cache -e ".[all]" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \
@@ -84,6 +85,12 @@ RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
+# Put the hermes venv's bin first on PATH so both:
+#   - server.py's `hermes gateway` subprocess resolves to the venv's CLI, and
+#   - the in-app Update flow's `uv pip install -e .` finds VIRTUAL_ENV at
+#     /opt/hermes-agent/venv (PROJECT_ROOT/venv) and can install into it.
+ENV PATH="/opt/hermes-agent/venv/bin:${PATH}"
+ENV VIRTUAL_ENV="/opt/hermes-agent/venv"
 
 # tini wraps start.sh so it runs as PID 1's child instead of as PID 1 itself.
 # `-g` propagates signals to the whole process group so `docker stop` /
