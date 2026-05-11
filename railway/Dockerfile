@@ -95,6 +95,40 @@ if needle in text and inject not in text:
         '    print("[pty_ws] accepted", flush=True, file=sys.stderr)\n',
         1,
     )
+    # Trace post-accept blocking points.  Inserted between `accepted`
+    # marker and the PTY spawn so we can see which sync call freezes
+    # the event loop and prevents the 101 from flushing to the proxy.
+    text = text.replace(
+        '    # --- spawn PTY ------------------------------------------------------\n'
+        '    resume = ws.query_params.get("resume") or None\n'
+        '    channel = _channel_or_close_code(ws)\n'
+        '    sidecar_url = _build_sidecar_url(channel) if channel else None\n',
+        '    # --- spawn PTY ------------------------------------------------------\n'
+        '    print("[pty_ws] post-accept: reading resume", flush=True, file=sys.stderr)\n'
+        '    resume = ws.query_params.get("resume") or None\n'
+        '    print("[pty_ws] post-accept: getting channel", flush=True, file=sys.stderr)\n'
+        '    channel = _channel_or_close_code(ws)\n'
+        '    print(f"[pty_ws] post-accept: channel={channel}", flush=True, file=sys.stderr)\n'
+        '    sidecar_url = _build_sidecar_url(channel) if channel else None\n'
+        '    print(f"[pty_ws] post-accept: sidecar_url={sidecar_url}", flush=True, file=sys.stderr)\n',
+        1,
+    )
+    text = text.replace(
+        '    try:\n        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)\n',
+        '    print("[pty_ws] post-accept: BEFORE _resolve_chat_argv (sync)", flush=True, file=sys.stderr)\n'
+        '    try:\n'
+        '        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)\n'
+        '        print(f"[pty_ws] post-accept: _resolve_chat_argv DONE argv0={argv[0] if argv else None}", flush=True, file=sys.stderr)\n',
+        1,
+    )
+    text = text.replace(
+        '    try:\n        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)\n',
+        '    print("[pty_ws] post-accept: BEFORE PtyBridge.spawn (sync)", flush=True, file=sys.stderr)\n'
+        '    try:\n'
+        '        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)\n'
+        '        print("[pty_ws] post-accept: PtyBridge.spawn DONE", flush=True, file=sys.stderr)\n',
+        1,
+    )
     path.write_text(text)
     print("Patched pty_ws with diagnostics")
 else:
