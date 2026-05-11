@@ -1546,7 +1546,15 @@ async def ws_proxy(websocket: WebSocket) -> None:
     try:
         upstream = await websockets.connect(
             upstream_url,
-            open_timeout=5,
+            # Diagnostic: bump from 5s to 30s. The dashboard subprocess
+            # logs show pty_ws() completing all post-accept work in <1ms,
+            # yet open_timeout=5 still trips with 'timed out during
+            # opening handshake'. If 30s succeeds, the 101 IS being sent
+            # but taking >5s to reach the proxy — likely a localhost
+            # scheduling / TCP buffer flush issue. If 30s ALSO times
+            # out, the 101 isn't being sent at all and the issue is in
+            # uvicorn/Starlette's accept() machinery for /api/pty.
+            open_timeout=30,
             # Don't forward client cookies/headers — hermes WS auth is
             # purely token-based via the URL, and forwarding random
             # headers risks future upstream surprises.
