@@ -101,6 +101,22 @@ else:
     print("WARN: pty_ws patch target not found or already applied")
 PY
 
+# npm_config_install_links=false forces npm to install file: deps as
+# symlinks (the npm 10+ default) even on the bundled npm 9.x that ships
+# with this Debian base. The host-side package-lock.json was generated
+# with a newer npm that uses symlinks; an install-as-copy produces a
+# hidden node_modules/.package-lock.json that permanently disagrees
+# with the root lock on the @hermes/ink entry. That disagreement makes
+# _tui_need_npm_install() return True at runtime, so the very first
+# /api/pty WebSocket request triggers a synchronous subprocess.run(npm
+# install) on the asyncio event loop — which freezes the loop long
+# enough for the upstream WS handshake response to never flush to the
+# proxy, surfacing as "TimeoutError('timed out during opening
+# handshake')" in the [ws-proxy] log. Setting this env BEFORE npm
+# install makes the build-time and runtime lockfiles agree, so the
+# runtime reinstall never fires.
+ENV npm_config_install_links=false
+
 RUN uv venv /opt/hermes-agent/venv && \
     cd /opt/hermes-agent && \
     uv pip install --python /opt/hermes-agent/venv/bin/python --no-cache -e ".[all]" && \
