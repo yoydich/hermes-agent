@@ -35,6 +35,7 @@ from pathlib import Path
 import httpx
 import websockets
 import websockets.exceptions
+import yaml
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import (
@@ -195,7 +196,7 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 def write_config_yaml(data: dict[str, str]) -> None:
-    """Write a minimal config.yaml so hermes picks up the model and provider."""
+    """Persist setup-selected model/provider without truncating config.yaml."""
     provider = (data.get("LLM_PROVIDER", "") or "auto").strip() or "auto"
     model = (data.get("LLM_MODEL", "") or "").strip()
     # Direct providers expect native model IDs, not OpenRouter-style prefixes.
@@ -208,29 +209,37 @@ def write_config_yaml(data: dict[str, str]) -> None:
             model = model.split("/", 1)[1]
     config_path = Path(HERMES_HOME) / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(f"""\
-model:
-  default: "{model}"
-  provider: "{provider}"
+    config: dict = {}
+    if config_path.exists():
+        try:
+            loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                config = loaded
+        except Exception as exc:
+            print(f"[config] WARN: could not parse existing config.yaml; preserving via backup: {exc}", flush=True)
+            backup = config_path.with_suffix(".yaml.bak")
+            try:
+                backup.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception:
+                pass
 
-terminal:
-  backend: "local"
-  timeout: 60
-  cwd: "/tmp"
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {"default": str(model_cfg or "")}
+    model_cfg["default"] = model
+    model_cfg["provider"] = provider
+    config["model"] = model_cfg
 
-agent:
-  max_iterations: 50
+    config.setdefault("terminal", {"backend": "local", "timeout": 60, "cwd": "/tmp"})
+    config.setdefault("agent", {"max_iterations": 50})
+    config.setdefault("compression", {"enabled": True})
+    config.setdefault("session_reset", {"mode": "idle", "idle_minutes": 10080, "at_hour": 4})
+    config.setdefault("data_dir", HERMES_HOME)
 
-compression:
-  enabled: true
-
-session_reset:
-  mode: "idle"
-  idle_minutes: 10080
-  at_hour: 4
-
-data_dir: "{HERMES_HOME}"
-""")
+    config_path.write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def write_env(path: Path, data: dict[str, str]) -> None:

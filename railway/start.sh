@@ -257,22 +257,52 @@ EOF
   echo "[seed] skills/web-research.md created"
 fi
 
-if [ ! -f /data/.hermes/skills/railway-ops.md ]; then
-  cat > /data/.hermes/skills/railway-ops.md <<'EOF'
+# Keep this skill synchronized with the deployment because it contains
+# project IDs and token-scope guidance the agent needs for Railway ops.
+cat > /data/.hermes/skills/railway-ops.md <<'EOF'
 ---
 name: railway-ops
-description: Operate on the user's Railway projects via the Railway GraphQL API (status, logs, env vars, redeploy)
+description: Operate on Railway projects via Railway CLI or GraphQL API; distinguish project IDs from access tokens
 required_environment_variables: [RAILWAY_TOKEN]
 ---
 
 # Railway operations
 
+## Credentials and project scope
+
+`RAILWAY_TOKEN` is an access token, not a project id. A Railway project URL such
+as `https://railway.com/project/<project_id>` only identifies the target
+project; it does not grant access.
+
+Before operating on a project, verify the token can see it:
+
+```bash
+RAILWAY_TOKEN="$RAILWAY_TOKEN" railway link --project <project_id> --environment production --service <service_name>
+```
+
+If this returns `Unauthorized`, do not keep retrying. The token is valid for
+some Railway account/project, but it does not have access to that project. Ask
+the operator for a token from the Railway account/team that owns `<project_id>`.
+
+Current known access:
+- Token currently configured in this deployment can operate the Hermes project
+  `38d7b20d-c9a4-4d1b-8c25-179c7b65d94f` (`hermes-agent`).
+- A previous check against project `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`
+  returned `Unauthorized`; treat it as a different/inaccessible project until
+  a fresh token is provided.
+
 Endpoint: `https://backboard.railway.com/graphql/v2`
 Auth: `Authorization: Bearer $RAILWAY_TOKEN`
 
-## Known projects (per USER.md)
-- `hermes-agent` — this deployment
-- `pengu-lite-v2.2` — separate service
+## Known projects
+- `hermes-agent` - this deployment. Project id:
+  `38d7b20d-c9a4-4d1b-8c25-179c7b65d94f`
+  - service `hermes-agent`: `e44f8be5-4379-4a69-9873-66ecd311032f`
+  - environment `production`: `4f7c4722-a82e-44ca-b461-14dd09bc46ce`
+- `confident-creativity` - Hermes Workspace service in the Hermes project.
+  - service id: `18dd544e-a2ea-479f-94bd-4769bdf3cdb8`
+  - public URL: `https://confident-creativity-production-8b68.up.railway.app`
+- `pengu-lite-v2.2` - separate service/project. Verify access before touching.
 
 ## Common ops
 
@@ -313,19 +343,16 @@ mutation($serviceId: String!, $environmentId: String!) {
 ```
 
 ## Safety rules
-- Confirm before:  variable deletes, service deletes, prod redeploys
-  during business hours, anything touching `pengu-lite-v2.2` (treat as prod).
+- Confirm before: variable deletes, service deletes, prod redeploys during busy hours, and anything touching `pengu-lite-v2.2`.
 - Mask secret values in logs / replies (show first 4 chars + ***).
 - After any write op, fetch current state and confirm the change took effect.
 
 ## Failure modes
-- "Unauthorized" → token expired; ask the user for a fresh one
-- "Forbidden" → token lacks scope for that project; confirm project ownership
-- 5xx → Railway flake; retry once with backoff before reporting
+- `Unauthorized` when linking/querying a specific project means the token lacks access to that project, or expired. Report the exact project id and ask for a token with access to it.
+- `Forbidden` means the token is recognized but lacks scope for the operation.
+- 5xx means Railway flake; retry once with backoff before reporting.
 EOF
-  echo "[seed] skills/railway-ops.md created"
-fi
-
+echo "[seed] skills/railway-ops.md synced"
 # Migrate existing .env + config.yaml so the bbb9a8c provider fix takes
 # effect on volumes that pre-date it. Without this, an old volume keeps
 # `provider: "auto"` in config.yaml AND lacks `LLM_PROVIDER` in .env, so
@@ -339,12 +366,14 @@ fi
 #      key is set (DEEPSEEK_API_KEY → "deepseek", etc.)
 #   3. Normalize LLM_MODEL for direct providers (strip "models/" and
 #      "<provider>/" prefixes that the old UI used to suggest).
-#   4. Rewrite .env and regenerate config.yaml via server.py's helpers
-#      (single source of truth — same code path as the admin UI's save).
+#   4. Patch config.yaml only when migration changed values or the file is
+#      missing. Do not regenerate it on every boot: dashboard users edit this
+#      file directly, and unconditional rewrites truncate their settings.
 python3 - <<'PYEOF'
 import sys
 sys.path.insert(0, "/app")
 from pathlib import Path
+import yaml
 from server import (
     read_env, write_env, write_config_yaml,
     ENV_FILE, PROVIDER_KEYS, PROVIDER_KEY_TO_ID,
@@ -380,14 +409,31 @@ if provider in DIRECT_PROVIDERS and model:
         changed = True
         print(f"[migrate] LLM_MODEL normalized: {original!r} → {model!r}")
 
-# 3. Persist .env (only if we changed something) and always regenerate
-#    config.yaml so it stays in sync with .env via the same code path
-#    used by the admin UI's save handler.
+# 3. Persist .env if needed. Patch config.yaml only when we performed a
+#    migration or the file is missing/invalid, so dashboard edits persist.
 if changed:
     write_env(ENV_FILE, data)
     print("[migrate] .env updated")
-write_config_yaml(data)
-print(f"[migrate] config.yaml regenerated — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
+
+config_path = Path("/data/.hermes/config.yaml")
+needs_config_patch = changed or not config_path.exists()
+if config_path.exists() and not needs_config_patch:
+    try:
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(cfg, dict):
+            needs_config_patch = True
+        else:
+            model_cfg = cfg.get("model")
+            if not model_cfg:
+                needs_config_patch = True
+    except Exception:
+        needs_config_patch = True
+
+if needs_config_patch:
+    write_config_yaml(data)
+    print(f"[migrate] config.yaml patched — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
+else:
+    print("[migrate] config.yaml left unchanged")
 PYEOF
 
 # ── Volume cleanup ────────────────────────────────────────────────────────────
