@@ -308,14 +308,32 @@ fi
 
 # Keep this skill synchronized with the deployment because it contains
 # project IDs and token-scope guidance the agent needs for Railway ops.
-cat > /data/.hermes/skills/railway-ops.md <<'EOF'
+rm -f /data/.hermes/skills/railway-ops.md /data/.hermes/skills/railway-ops-v2.md
+mkdir -p /data/.hermes/skills/devops/railway-ops
+cat > /data/.hermes/skills/devops/railway-ops/SKILL.md <<'EOF'
 ---
 name: railway-ops
-description: Operate on Railway projects via Railway CLI or GraphQL API; distinguish project IDs from access tokens
+description: Operate Railway projects from Hermes; use CLI only for Hermes project token and GraphQL Project-Access-Token for project-scoped tokens like hearty-truth
 required_environment_variables: [RAILWAY_TOKEN, RAILWAY_PENGU_TOKEN]
 ---
 
 # Railway operations
+
+## Non-negotiable facts
+
+- The `hearty-truth` project is project id `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`.
+- Its environment id is `95f33876-ab3b-4307-a346-97ed1a50ef11`.
+- Its token is available as `RAILWAY_PENGU_TOKEN`.
+- The token was verified with Railway GraphQL:
+  `query { projectToken { projectId environmentId } }`
+  using header `Project-Access-Token: $RAILWAY_PENGU_TOKEN`.
+- Railway CLI 4.58.0 in this container accepts the Hermes project token for
+  the Hermes project, but returned `Unauthorized` for `variable list` and
+  `logs` when called with `RAILWAY_PENGU_TOKEN`. For project-scoped tokens,
+  prefer Railway GraphQL with `Project-Access-Token`.
+- Do not conclude "Railway is unavailable" just because `railway whoami`,
+  `railway link`, or `railway logs` fails with a project token. Those commands
+  are not a valid universal test for project-scoped tokens.
 
 ## Credentials and project scope
 
@@ -329,12 +347,12 @@ Railway has two token modes:
   `railway logs`, `railway up`, etc.). Do not use `railway whoami` to test it.
 - Account/workspace token: store as `RAILWAY_API_TOKEN`. Use it for
   account/workspace CLI commands (`railway whoami`, `railway project list`) and
-  GraphQL with `Authorization: Bearer`.
+GraphQL with `Authorization: Bearer`.
 - Extra project tokens can be stored under named vars. This deployment uses
   `RAILWAY_PENGU_TOKEN` for project `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`.
 
-Before operating on the current project with a project token, verify CLI access
-with a project-scoped command:
+Before operating on the current Hermes project with `RAILWAY_TOKEN`, verify CLI
+access with a project-scoped command:
 
 ```bash
 command -v railway
@@ -342,9 +360,16 @@ printf '%s\n' "${RAILWAY_TOKEN:+RAILWAY_TOKEN=set}"
 railway variable list --service <service_name> --environment production
 ```
 
-Do not run `railway login` in this container. If Railway CLI asks for browser
-login, neither `RAILWAY_TOKEN` nor `RAILWAY_API_TOKEN` reached the shell. Report
-an environment propagation bug instead of asking the operator to open a browser.
+For `hearty-truth`, verify token access through GraphQL instead:
+
+```bash
+curl -sS https://backboard.railway.com/graphql/v2 \
+  -H "Content-Type: application/json" \
+  -H "Project-Access-Token: $RAILWAY_PENGU_TOKEN" \
+  --data '{"query":"query { projectToken { projectId environmentId } }"}'
+```
+
+Do not run `railway login` in this container.
 
 If a project-scoped command returns `Unauthorized`, do not keep retrying. The
 token is valid for some Railway account/project, but it does not have access to
@@ -380,6 +405,23 @@ Auth:
     `RAILWAY_TOKEN="$RAILWAY_PENGU_TOKEN" railway <command> ...`
 
 ## Common ops
+
+### Verify hearty-truth token
+
+```graphql
+query {
+  projectToken {
+    projectId
+    environmentId
+  }
+}
+```
+
+HTTP header: `Project-Access-Token: $RAILWAY_PENGU_TOKEN`.
+
+Expected:
+- `projectId`: `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`
+- `environmentId`: `95f33876-ab3b-4307-a346-97ed1a50ef11`
 
 ### Get project + service IDs
 ```graphql
@@ -423,12 +465,13 @@ mutation($serviceId: String!, $environmentId: String!) {
 - After any write op, fetch current state and confirm the change took effect.
 
 ## Failure modes
-- `railway whoami` failing with `RAILWAY_TOKEN` does not prove the project token is invalid; use `RAILWAY_API_TOKEN` for `whoami`, or test `RAILWAY_TOKEN` with `railway variable list`.
-- `Unauthorized` from a project-scoped command means the token lacks access to that project/environment, or expired. Report the exact project id and ask for a token with access to it.
+- `railway whoami` failing with `RAILWAY_TOKEN` does not prove the project token is invalid; use `RAILWAY_API_TOKEN` for `whoami`, or test token scope with GraphQL `projectToken`.
+- `railway variable list` / `railway logs` returning `Unauthorized` with `RAILWAY_PENGU_TOKEN` does not prove the token is invalid; use GraphQL with `Project-Access-Token`.
+- `Unauthorized` from GraphQL `projectToken` means the token is invalid/expired or not a Railway project token.
 - `Forbidden` means the token is recognized but lacks scope for the operation.
 - 5xx means Railway flake; retry once with backoff before reporting.
 EOF
-echo "[seed] skills/railway-ops.md synced"
+echo "[seed] skills/devops/railway-ops/SKILL.md synced"
 # Migrate existing .env + config.yaml so the bbb9a8c provider fix takes
 # effect on volumes that pre-date it. Without this, an old volume keeps
 # `provider: "auto"` in config.yaml AND lacks `LLM_PROVIDER` in .env, so
