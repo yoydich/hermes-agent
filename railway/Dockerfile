@@ -65,6 +65,8 @@ ENV npm_config_install_links=false
 RUN uv venv /opt/hermes-agent/venv && \
     cd /opt/hermes-agent && \
     uv pip install --python /opt/hermes-agent/venv/bin/python --no-cache -e ".[all]" && \
+    npm install -g @railway/cli --silent --no-fund --no-audit --progress=false && \
+    railway --version && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \

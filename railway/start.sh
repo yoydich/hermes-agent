@@ -122,6 +122,30 @@ else:
     print(f"[env-sync] {env_file} already in sync")
 PYEOF
 
+if [ -z "${RAILWAY_TOKEN:-}" ]; then
+  _railway_token_from_env_file="$(python3 - <<'PYEOF'
+from pathlib import Path
+env = Path("/data/.hermes/.env")
+value = ""
+if env.exists():
+    for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        if key.strip() == "RAILWAY_TOKEN":
+            value = raw.strip().strip('"').strip("'")
+            break
+print(value)
+PYEOF
+)"
+  if [ -n "$_railway_token_from_env_file" ]; then
+    export RAILWAY_TOKEN="$_railway_token_from_env_file"
+    echo "[env-sync] RAILWAY_TOKEN exported from /data/.hermes/.env"
+  fi
+  unset _railway_token_from_env_file
+fi
+
 # SOUL.md and AGENTS.md are ALWAYS overwritten on container start from the
 # repo (docker/SOUL.md, AGENTS.md). The volume is persistent across
 # redeploys, so a stale copy from an older deployment would otherwise stick
@@ -277,12 +301,20 @@ project; it does not grant access.
 Before operating on a project, verify the token can see it:
 
 ```bash
-RAILWAY_TOKEN="$RAILWAY_TOKEN" railway link --project <project_id> --environment production --service <service_name>
+command -v railway
+railway whoami
+railway link --project <project_id> --environment production --service <service_name>
 ```
 
-If this returns `Unauthorized`, do not keep retrying. The token is valid for
-some Railway account/project, but it does not have access to that project. Ask
-the operator for a token from the Railway account/team that owns `<project_id>`.
+Do not run `railway login` in this container. If Railway CLI asks for browser
+login, `RAILWAY_TOKEN` did not reach the shell. Check `printf '%s\n'
+"${RAILWAY_TOKEN:+set}"`; if it is empty, report an environment propagation
+bug instead of asking the operator to open a browser.
+
+If `railway whoami` works but `railway link` returns `Unauthorized`, do not keep
+retrying. The token is valid for some Railway account/project, but it does not
+have access to that project. Ask the operator for a token from the Railway
+account/team that owns `<project_id>`.
 
 Current known access:
 - Token currently configured in this deployment can operate the Hermes project
@@ -382,6 +414,36 @@ from server import (
 data = read_env(ENV_FILE)
 changed = False
 
+
+def ensure_railway_token_passthrough(config_path: Path) -> bool:
+    """Allow Hermes terminal commands to see RAILWAY_TOKEN.
+
+    Hermes intentionally strips secrets from terminal subprocesses unless a
+    skill registers them or config.yaml explicitly allows them. Railway ops are
+    deployment-admin tasks for this image, so keep the token available to the
+    terminal without depending on whether the model remembered to call
+    skill_view first.
+    """
+    cfg = {}
+    if config_path.exists():
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, dict):
+            cfg = loaded
+    terminal = cfg.get("terminal")
+    if not isinstance(terminal, dict):
+        terminal = {}
+    passthrough = terminal.get("env_passthrough")
+    if not isinstance(passthrough, list):
+        passthrough = []
+    if "RAILWAY_TOKEN" in passthrough:
+        return False
+    passthrough.append("RAILWAY_TOKEN")
+    terminal["env_passthrough"] = passthrough
+    cfg["terminal"] = terminal
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return True
+
 # 1. Infer LLM_PROVIDER from which provider API key is set.
 if not data.get("LLM_PROVIDER"):
     for key in PROVIDER_KEYS:
@@ -434,7 +496,28 @@ if needs_config_patch:
     print(f"[migrate] config.yaml patched — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
 else:
     print("[migrate] config.yaml left unchanged")
+
+try:
+    if ensure_railway_token_passthrough(config_path):
+        print("[migrate] terminal.env_passthrough added RAILWAY_TOKEN")
+    else:
+        print("[migrate] terminal.env_passthrough already includes RAILWAY_TOKEN")
+except Exception as exc:
+    print(f"[migrate] WARN: could not ensure RAILWAY_TOKEN passthrough: {exc}")
 PYEOF
+
+if command -v railway >/dev/null 2>&1; then
+  echo "[railway] cli available: $(railway --version 2>/dev/null || true)"
+  if [ -n "${RAILWAY_TOKEN:-}" ]; then
+    railway whoami >/tmp/railway-whoami.txt 2>&1 \
+      && echo "[railway] token accepted by CLI" \
+      || { echo "[railway] token check failed"; sed 's/[[:alnum:]_=-]\{12,\}/[redacted]/g' /tmp/railway-whoami.txt; }
+  else
+    echo "[railway] RAILWAY_TOKEN not set in process env"
+  fi
+else
+  echo "[railway] WARN: railway CLI missing from image"
+fi
 
 # ── Volume cleanup ────────────────────────────────────────────────────────────
 # image_cache and audio_cache grow unbounded — delete files older than 30 days.
