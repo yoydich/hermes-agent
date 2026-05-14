@@ -52,6 +52,7 @@ _RAILWAY_ENV_VARS=(
   GITHUB_TOKEN
   GH_TOKEN
   RAILWAY_TOKEN
+  RAILWAY_API_TOKEN
   TELEGRAM_BOT_TOKEN
   TELEGRAM_ALLOWED_USERS
   TELEGRAM_HOME_CHANNEL
@@ -76,7 +77,7 @@ railway_vars = [
     "NVIDIA_API_KEY", "ARCEE_API_KEY", "STEPFUN_API_KEY",
     "AI_GATEWAY_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
     "GOOGLE_API_KEY", "KIMI_CN_API_KEY",
-    "FAL_KEY", "GITHUB_TOKEN", "GH_TOKEN", "RAILWAY_TOKEN",
+    "FAL_KEY", "GITHUB_TOKEN", "GH_TOKEN", "RAILWAY_TOKEN", "RAILWAY_API_TOKEN",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD",
     "GATEWAY_ALLOW_ALL_USERS", "HERMES_DASHBOARD_PORT", "API_SERVER_PORT",
@@ -122,28 +123,44 @@ else:
     print(f"[env-sync] {env_file} already in sync")
 PYEOF
 
-if [ -z "${RAILWAY_TOKEN:-}" ]; then
-  _railway_token_from_env_file="$(python3 - <<'PYEOF'
+if [ -z "${RAILWAY_TOKEN:-}" ] || [ -z "${RAILWAY_API_TOKEN:-}" ]; then
+  _railway_tokens_from_env_file="$(python3 - <<'PYEOF'
 from pathlib import Path
 env = Path("/data/.hermes/.env")
-value = ""
+values = {"RAILWAY_TOKEN": "", "RAILWAY_API_TOKEN": ""}
 if env.exists():
     for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, raw = line.partition("=")
-        if key.strip() == "RAILWAY_TOKEN":
-            value = raw.strip().strip('"').strip("'")
-            break
-print(value)
+        key = key.strip()
+        if key in values:
+            values[key] = raw.strip().strip('"').strip("'")
+for key, value in values.items():
+    if value:
+        print(f"{key}={value}")
 PYEOF
 )"
-  if [ -n "$_railway_token_from_env_file" ]; then
-    export RAILWAY_TOKEN="$_railway_token_from_env_file"
-    echo "[env-sync] RAILWAY_TOKEN exported from /data/.hermes/.env"
-  fi
-  unset _railway_token_from_env_file
+  while IFS='=' read -r _railway_key _railway_value; do
+    case "$_railway_key" in
+      RAILWAY_TOKEN)
+        if [ -z "${RAILWAY_TOKEN:-}" ] && [ -n "$_railway_value" ]; then
+          export RAILWAY_TOKEN="$_railway_value"
+          echo "[env-sync] RAILWAY_TOKEN exported from /data/.hermes/.env"
+        fi
+        ;;
+      RAILWAY_API_TOKEN)
+        if [ -z "${RAILWAY_API_TOKEN:-}" ] && [ -n "$_railway_value" ]; then
+          export RAILWAY_API_TOKEN="$_railway_value"
+          echo "[env-sync] RAILWAY_API_TOKEN exported from /data/.hermes/.env"
+        fi
+        ;;
+    esac
+  done <<EOF
+$_railway_tokens_from_env_file
+EOF
+  unset _railway_key _railway_value _railway_tokens_from_env_file
 fi
 
 # SOUL.md and AGENTS.md are ALWAYS overwritten on container start from the
@@ -298,23 +315,31 @@ required_environment_variables: [RAILWAY_TOKEN]
 as `https://railway.com/project/<project_id>` only identifies the target
 project; it does not grant access.
 
-Before operating on a project, verify the token can see it:
+Railway has two token modes:
+- Project token: store as `RAILWAY_TOKEN`. It is scoped to one project
+  environment. Use it for project-level CLI commands (`railway variable`,
+  `railway logs`, `railway up`, etc.). Do not use `railway whoami` to test it.
+- Account/workspace token: store as `RAILWAY_API_TOKEN`. Use it for
+  account/workspace CLI commands (`railway whoami`, `railway project list`) and
+  GraphQL with `Authorization: Bearer`.
+
+Before operating on the current project with a project token, verify CLI access
+with a project-scoped command:
 
 ```bash
 command -v railway
-railway whoami
-railway link --project <project_id> --environment production --service <service_name>
+printf '%s\n' "${RAILWAY_TOKEN:+RAILWAY_TOKEN=set}"
+railway variable list --service <service_name> --environment production
 ```
 
 Do not run `railway login` in this container. If Railway CLI asks for browser
-login, `RAILWAY_TOKEN` did not reach the shell. Check `printf '%s\n'
-"${RAILWAY_TOKEN:+set}"`; if it is empty, report an environment propagation
-bug instead of asking the operator to open a browser.
+login, neither `RAILWAY_TOKEN` nor `RAILWAY_API_TOKEN` reached the shell. Report
+an environment propagation bug instead of asking the operator to open a browser.
 
-If `railway whoami` works but `railway link` returns `Unauthorized`, do not keep
-retrying. The token is valid for some Railway account/project, but it does not
-have access to that project. Ask the operator for a token from the Railway
-account/team that owns `<project_id>`.
+If a project-scoped command returns `Unauthorized`, do not keep retrying. The
+token is valid for some Railway account/project, but it does not have access to
+that project/environment. Ask the operator for a project token created inside
+that Railway project/environment.
 
 Current known access:
 - Token currently configured in this deployment can operate the Hermes project
@@ -324,7 +349,9 @@ Current known access:
   a fresh token is provided.
 
 Endpoint: `https://backboard.railway.com/graphql/v2`
-Auth: `Authorization: Bearer $RAILWAY_TOKEN`
+Auth:
+- Account/workspace/OAuth token: `Authorization: Bearer $RAILWAY_API_TOKEN`
+- Project token: `Project-Access-Token: $RAILWAY_TOKEN`
 
 ## Known projects
 - `hermes-agent` - this deployment. Project id:
@@ -380,7 +407,8 @@ mutation($serviceId: String!, $environmentId: String!) {
 - After any write op, fetch current state and confirm the change took effect.
 
 ## Failure modes
-- `Unauthorized` when linking/querying a specific project means the token lacks access to that project, or expired. Report the exact project id and ask for a token with access to it.
+- `railway whoami` failing with `RAILWAY_TOKEN` does not prove the project token is invalid; use `RAILWAY_API_TOKEN` for `whoami`, or test `RAILWAY_TOKEN` with `railway variable list`.
+- `Unauthorized` from a project-scoped command means the token lacks access to that project/environment, or expired. Report the exact project id and ask for a token with access to it.
 - `Forbidden` means the token is recognized but lacks scope for the operation.
 - 5xx means Railway flake; retry once with backoff before reporting.
 EOF
@@ -416,7 +444,7 @@ changed = False
 
 
 def ensure_railway_token_passthrough(config_path: Path) -> bool:
-    """Allow Hermes terminal commands to see RAILWAY_TOKEN.
+    """Allow Hermes terminal commands to see Railway tokens.
 
     Hermes intentionally strips secrets from terminal subprocesses unless a
     skill registers them or config.yaml explicitly allows them. Railway ops are
@@ -435,9 +463,13 @@ def ensure_railway_token_passthrough(config_path: Path) -> bool:
     passthrough = terminal.get("env_passthrough")
     if not isinstance(passthrough, list):
         passthrough = []
-    if "RAILWAY_TOKEN" in passthrough:
+    changed = False
+    for name in ("RAILWAY_TOKEN", "RAILWAY_API_TOKEN"):
+        if name not in passthrough:
+            passthrough.append(name)
+            changed = True
+    if not changed:
         return False
-    passthrough.append("RAILWAY_TOKEN")
     terminal["env_passthrough"] = passthrough
     cfg["terminal"] = terminal
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -499,21 +531,25 @@ else:
 
 try:
     if ensure_railway_token_passthrough(config_path):
-        print("[migrate] terminal.env_passthrough added RAILWAY_TOKEN")
+        print("[migrate] terminal.env_passthrough added Railway tokens")
     else:
-        print("[migrate] terminal.env_passthrough already includes RAILWAY_TOKEN")
+        print("[migrate] terminal.env_passthrough already includes Railway tokens")
 except Exception as exc:
-    print(f"[migrate] WARN: could not ensure RAILWAY_TOKEN passthrough: {exc}")
+    print(f"[migrate] WARN: could not ensure Railway token passthrough: {exc}")
 PYEOF
 
 if command -v railway >/dev/null 2>&1; then
   echo "[railway] cli available: $(railway --version 2>/dev/null || true)"
   if [ -n "${RAILWAY_TOKEN:-}" ]; then
-    railway whoami >/tmp/railway-whoami.txt 2>&1 \
-      && echo "[railway] token accepted by CLI" \
-      || { echo "[railway] token check failed"; sed 's/[[:alnum:]_=-]\{12,\}/[redacted]/g' /tmp/railway-whoami.txt; }
+    railway variable list --service "${RAILWAY_SERVICE_NAME:-hermes-agent}" --environment "${RAILWAY_ENVIRONMENT_NAME:-production}" >/tmp/railway-token-check.txt 2>&1 \
+      && echo "[railway] project token accepted by CLI" \
+      || { echo "[railway] project token check failed"; sed 's/[[:alnum:]_=-]\{12,\}/[redacted]/g' /tmp/railway-token-check.txt; }
+  elif [ -n "${RAILWAY_API_TOKEN:-}" ]; then
+    railway whoami >/tmp/railway-token-check.txt 2>&1 \
+      && echo "[railway] api token accepted by CLI" \
+      || { echo "[railway] api token check failed"; sed 's/[[:alnum:]_=-]\{12,\}/[redacted]/g' /tmp/railway-token-check.txt; }
   else
-    echo "[railway] RAILWAY_TOKEN not set in process env"
+    echo "[railway] no Railway token set in process env"
   fi
 else
   echo "[railway] WARN: railway CLI missing from image"
