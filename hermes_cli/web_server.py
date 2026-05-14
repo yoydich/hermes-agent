@@ -3049,6 +3049,40 @@ _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
 
 
+def _latest_dashboard_chat_session() -> Optional[str]:
+    """Return the most recent real dashboard/TUI chat session, if any.
+
+    The browser /chat WebSocket can reconnect without a ``resume=`` query
+    parameter (tab reload, frontend remount, transient network loss). Starting
+    ``hermes --tui`` with no resume silently creates a history=0 session, which
+    looks like context loss. Prefer the latest non-empty TUI root/branch session
+    as the sticky default; explicit ``resume=`` still wins.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sessions = db.list_sessions_rich(
+            source="tui",
+            limit=20,
+            order_by_last_active=True,
+        )
+        for session in sessions:
+            if session.get("message_count", 0) <= 0:
+                continue
+            session_id = session.get("id")
+            if not session_id:
+                continue
+            latest, _path = _session_latest_descendant(session_id)
+            return latest or session_id
+    except Exception:
+        _log.exception("Failed to resolve latest dashboard chat session")
+        return None
+    finally:
+        db.close()
+    return None
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -3062,7 +3096,9 @@ def _resolve_chat_argv(
     Session resume is propagated via the ``HERMES_TUI_RESUME`` env var —
     matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
     Appending ``--resume <id>`` to argv doesn't work because ``ui-tui`` does
-    not parse its argv.
+    not parse its argv. When the dashboard reconnects without an explicit
+    resume target, it resumes the latest non-empty TUI chat session instead of
+    creating a surprising history=0 session.
 
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
@@ -3080,6 +3116,9 @@ def _resolve_chat_argv(
     # build unchanged for native CLI usage; only disable mouse tracking for
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+
+    if not resume:
+        resume = _latest_dashboard_chat_session()
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
