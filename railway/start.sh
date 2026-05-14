@@ -308,7 +308,10 @@ fi
 
 # Keep this skill synchronized with the deployment because it contains
 # project IDs and token-scope guidance the agent needs for Railway ops.
-rm -f /data/.hermes/skills/railway-ops.md /data/.hermes/skills/railway-ops-v2.md
+rm -rf /data/.hermes/skills/railway-ops.md \
+       /data/.hermes/skills/railway-ops-v2.md \
+       /data/.hermes/skills/railway-ops-v2 \
+       /data/.hermes/skills/devops/railway-ops-v2
 mkdir -p /data/.hermes/skills/devops/railway-ops
 cat > /data/.hermes/skills/devops/railway-ops/SKILL.md <<'EOF'
 ---
