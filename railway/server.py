@@ -233,9 +233,20 @@ def write_config_yaml(data: dict[str, str]) -> None:
     config["model"] = model_cfg
 
     config.setdefault("terminal", {"backend": "local", "timeout": 60, "cwd": "/tmp"})
-    config.setdefault("agent", {"max_iterations": 50})
+    agent_cfg = config.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {"max_iterations": 50}
+    agent_cfg.setdefault("max_iterations", 50)
+    # Railway already controls process lifetime. Do not let the gateway's
+    # inactivity timeout make long dashboard/Telegram turns look like dead
+    # sessions; explicit /stop and /reset still work.
+    agent_cfg.setdefault("gateway_timeout", 0)
+    agent_cfg.setdefault("gateway_timeout_warning", 0)
+    config["agent"] = agent_cfg
     config.setdefault("compression", {"enabled": True})
-    config.setdefault("session_reset", {"mode": "idle", "idle_minutes": 10080, "at_hour": 4})
+    # Railway deployments are long-lived personal agents. Default to stable
+    # sessions; users can still opt into idle/daily reset in config.yaml.
+    config.setdefault("session_reset", {"mode": "none", "idle_minutes": 10080, "at_hour": 4})
     config.setdefault("data_dir", HERMES_HOME)
 
     config_path.write_text(

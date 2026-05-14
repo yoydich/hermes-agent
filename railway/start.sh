@@ -753,6 +753,53 @@ def ensure_railway_token_passthrough(config_path: Path) -> bool:
     config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return True
 
+
+def ensure_railway_session_stability(config_path: Path) -> list[str]:
+    """Disable Railway-specific session killers in the persistent config.
+
+    Hermes has explicit /reset and /stop commands. On Railway, implicit idle
+    resets and inactivity timeouts are a bad default because long hosted turns
+    can look like a dead session from Telegram/dashboard. Keep the config
+    stable across redeploys unless a user later edits it intentionally.
+    """
+    cfg = {}
+    if config_path.exists():
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, dict):
+            cfg = loaded
+
+    changes: list[str] = []
+
+    session_reset = cfg.get("session_reset")
+    if not isinstance(session_reset, dict):
+        session_reset = {}
+    if session_reset.get("mode") != "none":
+        session_reset["mode"] = "none"
+        changes.append("session_reset.mode=none")
+    session_reset.setdefault("idle_minutes", 10080)
+    session_reset.setdefault("at_hour", 4)
+    cfg["session_reset"] = session_reset
+
+    agent = cfg.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    if agent.get("gateway_timeout") != 0:
+        agent["gateway_timeout"] = 0
+        changes.append("agent.gateway_timeout=0")
+    if agent.get("gateway_timeout_warning") != 0:
+        agent["gateway_timeout_warning"] = 0
+        changes.append("agent.gateway_timeout_warning=0")
+    agent.setdefault("max_iterations", 50)
+    cfg["agent"] = agent
+
+    if changes:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    return changes
+
 # 1. Infer LLM_PROVIDER from which provider API key is set.
 if not data.get("LLM_PROVIDER"):
     for key in PROVIDER_KEYS:
@@ -813,6 +860,15 @@ try:
         print("[migrate] terminal.env_passthrough already includes Railway tokens")
 except Exception as exc:
     print(f"[migrate] WARN: could not ensure Railway token passthrough: {exc}")
+
+try:
+    stability_changes = ensure_railway_session_stability(config_path)
+    if stability_changes:
+        print("[migrate] railway session stability applied: " + ", ".join(stability_changes))
+    else:
+        print("[migrate] railway session stability already configured")
+except Exception as exc:
+    print(f"[migrate] WARN: could not ensure Railway session stability: {exc}")
 PYEOF
 
 if command -v railway >/dev/null 2>&1; then
