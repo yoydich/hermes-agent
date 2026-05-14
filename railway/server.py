@@ -122,6 +122,7 @@ ENV_VARS = [
     ("GITHUB_TOKEN",             "GitHub token",             "tool",      True),
     ("RAILWAY_TOKEN",            "Railway token",            "tool",      True),
     ("RAILWAY_API_TOKEN",        "Railway API token",        "tool",      True),
+    ("RAILWAY_PENGU_TOKEN",      "Railway Pengu token",      "tool",      True),
     ("VOICE_TOOLS_OPENAI_KEY",   "OpenAI (voice/TTS)",       "tool",      True),
     ("HONCHO_API_KEY",           "Honcho (memory)",          "tool",      True),
     ("TELEGRAM_BOT_TOKEN",       "Bot Token",                "telegram",  True),

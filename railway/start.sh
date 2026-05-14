@@ -53,6 +53,7 @@ _RAILWAY_ENV_VARS=(
   GH_TOKEN
   RAILWAY_TOKEN
   RAILWAY_API_TOKEN
+  RAILWAY_PENGU_TOKEN
   TELEGRAM_BOT_TOKEN
   TELEGRAM_ALLOWED_USERS
   TELEGRAM_HOME_CHANNEL
@@ -78,6 +79,7 @@ railway_vars = [
     "AI_GATEWAY_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
     "GOOGLE_API_KEY", "KIMI_CN_API_KEY",
     "FAL_KEY", "GITHUB_TOKEN", "GH_TOKEN", "RAILWAY_TOKEN", "RAILWAY_API_TOKEN",
+    "RAILWAY_PENGU_TOKEN",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD",
     "GATEWAY_ALLOW_ALL_USERS", "HERMES_DASHBOARD_PORT", "API_SERVER_PORT",
@@ -123,11 +125,11 @@ else:
     print(f"[env-sync] {env_file} already in sync")
 PYEOF
 
-if [ -z "${RAILWAY_TOKEN:-}" ] || [ -z "${RAILWAY_API_TOKEN:-}" ]; then
+if [ -z "${RAILWAY_TOKEN:-}" ] || [ -z "${RAILWAY_API_TOKEN:-}" ] || [ -z "${RAILWAY_PENGU_TOKEN:-}" ]; then
   _railway_tokens_from_env_file="$(python3 - <<'PYEOF'
 from pathlib import Path
 env = Path("/data/.hermes/.env")
-values = {"RAILWAY_TOKEN": "", "RAILWAY_API_TOKEN": ""}
+values = {"RAILWAY_TOKEN": "", "RAILWAY_API_TOKEN": "", "RAILWAY_PENGU_TOKEN": ""}
 if env.exists():
     for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -154,6 +156,12 @@ PYEOF
         if [ -z "${RAILWAY_API_TOKEN:-}" ] && [ -n "$_railway_value" ]; then
           export RAILWAY_API_TOKEN="$_railway_value"
           echo "[env-sync] RAILWAY_API_TOKEN exported from /data/.hermes/.env"
+        fi
+        ;;
+      RAILWAY_PENGU_TOKEN)
+        if [ -z "${RAILWAY_PENGU_TOKEN:-}" ] && [ -n "$_railway_value" ]; then
+          export RAILWAY_PENGU_TOKEN="$_railway_value"
+          echo "[env-sync] RAILWAY_PENGU_TOKEN exported from /data/.hermes/.env"
         fi
         ;;
     esac
@@ -304,7 +312,7 @@ cat > /data/.hermes/skills/railway-ops.md <<'EOF'
 ---
 name: railway-ops
 description: Operate on Railway projects via Railway CLI or GraphQL API; distinguish project IDs from access tokens
-required_environment_variables: [RAILWAY_TOKEN]
+required_environment_variables: [RAILWAY_TOKEN, RAILWAY_PENGU_TOKEN]
 ---
 
 # Railway operations
@@ -322,6 +330,8 @@ Railway has two token modes:
 - Account/workspace token: store as `RAILWAY_API_TOKEN`. Use it for
   account/workspace CLI commands (`railway whoami`, `railway project list`) and
   GraphQL with `Authorization: Bearer`.
+- Extra project tokens can be stored under named vars. This deployment uses
+  `RAILWAY_PENGU_TOKEN` for project `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`.
 
 Before operating on the current project with a project token, verify CLI access
 with a project-scoped command:
@@ -352,6 +362,7 @@ Endpoint: `https://backboard.railway.com/graphql/v2`
 Auth:
 - Account/workspace/OAuth token: `Authorization: Bearer $RAILWAY_API_TOKEN`
 - Project token: `Project-Access-Token: $RAILWAY_TOKEN`
+- Pengu project token: `Project-Access-Token: $RAILWAY_PENGU_TOKEN`
 
 ## Known projects
 - `hermes-agent` - this deployment. Project id:
@@ -361,7 +372,12 @@ Auth:
 - `confident-creativity` - Hermes Workspace service in the Hermes project.
   - service id: `18dd544e-a2ea-479f-94bd-4769bdf3cdb8`
   - public URL: `https://confident-creativity-production-8b68.up.railway.app`
-- `pengu-lite-v2.2` - separate service/project. Verify access before touching.
+- `hearty-truth` / `pengu-lite-v2.2` - separate project. Verify target service before touching.
+  - project id: `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`
+  - environment id: `95f33876-ab3b-4307-a346-97ed1a50ef11`
+  - token env var in Hermes: `RAILWAY_PENGU_TOKEN`
+  - for Railway CLI commands, prefix with:
+    `RAILWAY_TOKEN="$RAILWAY_PENGU_TOKEN" railway <command> ...`
 
 ## Common ops
 
@@ -464,7 +480,7 @@ def ensure_railway_token_passthrough(config_path: Path) -> bool:
     if not isinstance(passthrough, list):
         passthrough = []
     changed = False
-    for name in ("RAILWAY_TOKEN", "RAILWAY_API_TOKEN"):
+    for name in ("RAILWAY_TOKEN", "RAILWAY_API_TOKEN", "RAILWAY_PENGU_TOKEN"):
         if name not in passthrough:
             passthrough.append(name)
             changed = True
