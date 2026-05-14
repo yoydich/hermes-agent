@@ -312,7 +312,7 @@ rm -rf /data/.hermes/skills/railway-ops.md \
        /data/.hermes/skills/railway-ops-v2.md \
        /data/.hermes/skills/railway-ops-v2 \
        /data/.hermes/skills/devops/railway-ops-v2
-mkdir -p /data/.hermes/skills/devops/railway-ops
+mkdir -p /data/.hermes/skills/devops/railway-ops/scripts
 cat > /data/.hermes/skills/devops/railway-ops/SKILL.md <<'EOF'
 ---
 name: railway-ops
@@ -327,6 +327,8 @@ required_environment_variables: [RAILWAY_TOKEN, RAILWAY_PENGU_TOKEN]
 - The `hearty-truth` project is project id `2e55b27a-b1d6-4f53-a31f-50a1a7cdc478`.
 - Its environment id is `95f33876-ab3b-4307-a346-97ed1a50ef11`.
 - Its token is available as `RAILWAY_PENGU_TOKEN`.
+- Helper script for logs/deployments:
+  `/data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py`
 - The token was verified with Railway GraphQL:
   `query { projectToken { projectId environmentId } }`
   using header `Project-Access-Token: $RAILWAY_PENGU_TOKEN`.
@@ -409,6 +411,25 @@ Auth:
 
 ## Common ops
 
+### Preferred helper script
+
+Use this instead of hand-writing curl:
+
+```bash
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py services
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py deployments --limit 10
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py logs --limit 80
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py build-logs --limit 80
+```
+
+Deploy/redeploy commands are production-affecting. Only run them after the
+operator explicitly asks for deploy/redeploy:
+
+```bash
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py redeploy-service --yes
+python /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py redeploy-deployment --deployment-id <deployment_id> --yes
+```
+
 ### Verify hearty-truth token
 
 ```graphql
@@ -475,6 +496,200 @@ mutation($serviceId: String!, $environmentId: String!) {
 - 5xx means Railway flake; retry once with backoff before reporting.
 EOF
 echo "[seed] skills/devops/railway-ops/SKILL.md synced"
+
+cat > /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py <<'PYEOF'
+#!/usr/bin/env python3
+"""Railway GraphQL helper for hearty-truth / pengu-bot-v2.
+
+Uses Project-Access-Token, because Railway CLI 4.58.0 is unreliable for this
+project-scoped token in the Hermes container.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
+ENDPOINT = "https://backboard.railway.com/graphql/v2"
+PROJECT_ID = "2e55b27a-b1d6-4f53-a31f-50a1a7cdc478"
+ENVIRONMENT_ID = "95f33876-ab3b-4307-a346-97ed1a50ef11"
+SERVICE_ID = "5df3ff90-3642-4d3e-ba08-9aa47c10b6e1"
+SERVICE_NAME = "pengu-bot-v2"
+
+
+def token() -> str:
+    value = os.environ.get("RAILWAY_PENGU_TOKEN") or os.environ.get("RAILWAY_TOKEN") or ""
+    if not value.strip():
+        raise SystemExit("RAILWAY_PENGU_TOKEN is not set")
+    return value.strip()
+
+
+def gql(query: str, variables: dict | None = None) -> dict:
+    body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Project-Access-Token": token(),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"Railway HTTP {exc.code}: {text}") from exc
+    if data.get("errors"):
+        raise SystemExit(json.dumps(data["errors"], indent=2, ensure_ascii=False))
+    return data["data"]
+
+
+def print_json(data: object) -> None:
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def latest_deployment_id() -> str:
+    data = gql(
+        """
+        query($input: DeploymentListInput!, $first: Int) {
+          deployments(input: $input, first: $first) {
+            edges { node { id status createdAt serviceId url } }
+          }
+        }
+        """,
+        {"input": {"projectId": PROJECT_ID, "environmentId": ENVIRONMENT_ID, "serviceId": SERVICE_ID}, "first": 1},
+    )
+    edges = data["deployments"]["edges"]
+    if not edges:
+        raise SystemExit("No deployments found")
+    return edges[0]["node"]["id"]
+
+
+def cmd_verify(_: argparse.Namespace) -> None:
+    print_json(gql("query { projectToken { projectId environmentId } }"))
+
+
+def cmd_services(_: argparse.Namespace) -> None:
+    print_json(gql(
+        """
+        query($projectId: String!) {
+          project(id: $projectId) {
+            id
+            name
+            services { edges { node { id name } } }
+          }
+        }
+        """,
+        {"projectId": PROJECT_ID},
+    ))
+
+
+def cmd_deployments(args: argparse.Namespace) -> None:
+    print_json(gql(
+        """
+        query($input: DeploymentListInput!, $first: Int) {
+          deployments(input: $input, first: $first) {
+            edges { node { id status createdAt serviceId url } }
+          }
+        }
+        """,
+        {
+            "input": {"projectId": PROJECT_ID, "environmentId": ENVIRONMENT_ID, "serviceId": SERVICE_ID},
+            "first": args.limit,
+        },
+    ))
+
+
+def _logs(kind: str, args: argparse.Namespace) -> None:
+    deployment_id = args.deployment_id or latest_deployment_id()
+    field = "buildLogs" if kind == "build" else "deploymentLogs"
+    print_json(gql(
+        f"""
+        query($deploymentId: String!, $limit: Int, $filter: String) {{
+          {field}(deploymentId: $deploymentId, limit: $limit, filter: $filter) {{
+            timestamp
+            severity
+            message
+          }}
+        }}
+        """,
+        {"deploymentId": deployment_id, "limit": args.limit, "filter": args.filter},
+    ))
+
+
+def cmd_logs(args: argparse.Namespace) -> None:
+    _logs("runtime", args)
+
+
+def cmd_build_logs(args: argparse.Namespace) -> None:
+    _logs("build", args)
+
+
+def _require_yes(args: argparse.Namespace) -> None:
+    if not args.yes:
+        raise SystemExit("Refusing production deploy without --yes")
+
+
+def cmd_redeploy_service(args: argparse.Namespace) -> None:
+    _require_yes(args)
+    print_json(gql(
+        """
+        mutation($serviceId: String!, $environmentId: String!) {
+          serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+        }
+        """,
+        {"serviceId": SERVICE_ID, "environmentId": ENVIRONMENT_ID},
+    ))
+
+
+def cmd_redeploy_deployment(args: argparse.Namespace) -> None:
+    _require_yes(args)
+    deployment_id = args.deployment_id or latest_deployment_id()
+    print_json(gql(
+        """
+        mutation($id: String!, $usePreviousImageTag: Boolean) {
+          deploymentRedeploy(id: $id, usePreviousImageTag: $usePreviousImageTag)
+        }
+        """,
+        {"id": deployment_id, "usePreviousImageTag": args.use_previous_image_tag},
+    ))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=f"Railway helper for {SERVICE_NAME}")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("verify").set_defaults(func=cmd_verify)
+    sub.add_parser("services").set_defaults(func=cmd_services)
+    p = sub.add_parser("deployments")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(func=cmd_deployments)
+    for name, func in (("logs", cmd_logs), ("build-logs", cmd_build_logs)):
+        p = sub.add_parser(name)
+        p.add_argument("--deployment-id", default="")
+        p.add_argument("--limit", type=int, default=100)
+        p.add_argument("--filter", default=None)
+        p.set_defaults(func=func)
+    p = sub.add_parser("redeploy-service")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_redeploy_service)
+    p = sub.add_parser("redeploy-deployment")
+    p.add_argument("--deployment-id", default="")
+    p.add_argument("--use-previous-image-tag", action="store_true")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_redeploy_deployment)
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
+PYEOF
+chmod +x /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py
+echo "[seed] skills/devops/railway-ops/scripts/hearty_truth.py synced"
 # Migrate existing .env + config.yaml so the bbb9a8c provider fix takes
 # effect on volumes that pre-date it. Without this, an old volume keeps
 # `provider: "auto"` in config.yaml AND lacks `LLM_PROVIDER` in .env, so
