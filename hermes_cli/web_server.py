@@ -630,6 +630,7 @@ async def get_status():
 
     return {
         "version": __version__,
+        "git_commit": _current_git_commit(),
         "release_date": __release_date__,
         "hermes_home": str(get_hermes_home()),
         "config_path": str(get_config_path()),
@@ -718,6 +719,19 @@ def _tail_lines(path: Path, n: int) -> List[str]:
         return []
     lines = text.splitlines()
     return lines[-n:] if n > 0 else lines
+
+
+def _current_git_commit() -> Optional[str]:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip() or None
+    except Exception:
+        return None
 
 
 @app.post("/api/gateway/restart")

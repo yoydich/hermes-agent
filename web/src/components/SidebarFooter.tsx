@@ -6,6 +6,10 @@ import { useI18n } from "@/i18n";
 export function SidebarFooter() {
   const status = useSidebarStatus();
   const { t } = useI18n();
+  const versionLabel =
+    status?.version != null
+      ? `v${status.version}${status.git_commit ? ` @ ${status.git_commit}` : ""}`
+      : "-";
 
   return (
     <div
@@ -19,7 +23,7 @@ export function SidebarFooter() {
         mondwest
         className="font-mono-ui text-[0.7rem] tabular-nums tracking-[0.1em] text-muted-foreground/70 lowercase"
       >
-        {status?.version != null ? `v${status.version}` : "—"}
+        {versionLabel}
       </Typography>
 
       <a
