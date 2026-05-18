@@ -721,6 +721,51 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     return proc
 
 
+def _is_railway_runtime() -> bool:
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+
+
+def _github_update_enabled() -> bool:
+    mode = (os.getenv("HERMES_DASHBOARD_UPDATE_MODE") or "").strip().lower()
+    if mode in {"github", "github-sync", "railway"}:
+        return True
+    if mode in {"local", "hermes", "disabled"}:
+        return False
+    return _is_railway_runtime()
+
+
+def _spawn_github_update_action(name: str) -> subprocess.Popen:
+    """Spawn a GitHub fork sync for Railway-style auto-deploy installs."""
+    log_file_name = _ACTION_LOG_FILES[name]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+    log_file = open(log_path, "ab", buffering=0)
+    log_file.write(
+        f"\n=== {name} github-sync started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+    )
+
+    env = {**os.environ, "HERMES_NONINTERACTIVE": "1", "HERMES_UPDATE_REPO_ROOT": str(PROJECT_ROOT)}
+    cmd = [sys.executable, "-m", "hermes_cli.github_update"]
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    _ACTION_PROCS[name] = proc
+    return proc
+
+
 def _tail_lines(path: Path, n: int) -> List[str]:
     """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
     for our small per-action logs.  Binary-decoded with ``errors='replace'``
@@ -765,9 +810,17 @@ async def restart_gateway():
 
 @app.post("/api/hermes/update")
 async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
+    """Kick off a Hermes update in the background.
+
+    On Railway, source-of-truth is GitHub. Updating files inside the running
+    container is ephemeral and will not trigger a rebuild, so the dashboard
+    syncs the GitHub fork instead. Railway then auto-deploys from that push.
+    """
     try:
-        proc = _spawn_hermes_action(["update"], "hermes-update")
+        if _github_update_enabled():
+            proc = _spawn_github_update_action("hermes-update")
+        else:
+            proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
         _log.exception("Failed to spawn hermes update")
         raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
@@ -798,12 +851,14 @@ async def get_action_status(name: str, lines: int = 200):
         running = exit_code is None
         pid = proc.pid
 
-    requires_restart = name == "hermes-update" and running is False and exit_code == 0
-    message = (
-        "Update finished. Restart the dashboard/container to load the new version."
-        if requires_restart
-        else None
-    )
+    github_update = name == "hermes-update" and _github_update_enabled()
+    requires_restart = name == "hermes-update" and not github_update and running is False and exit_code == 0
+    if name == "hermes-update" and running is False and exit_code == 0 and github_update:
+        message = "GitHub updated. Railway auto-deploy should start from the pushed commit."
+    elif requires_restart:
+        message = "Update finished. Restart the dashboard/container to load the new version."
+    else:
+        message = None
 
     return {
         "name": name,

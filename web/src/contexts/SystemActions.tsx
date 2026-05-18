@@ -45,7 +45,9 @@ export function SystemActionsProvider({
         if (!resp.running) {
           const ok = resp.exit_code === 0;
           const message =
-            ok && resp.requires_restart
+            ok && resp.message
+              ? resp.message
+              : ok && resp.requires_restart
               ? t.status.updateRequiresRestart
               : ok
                 ? t.status.actionFinished
