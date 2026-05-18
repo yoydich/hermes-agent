@@ -31,6 +31,7 @@ RUN apt-get update && \
 # Deleting web/ afterwards makes hermes's internal _build_web_ui skip the
 # rebuild step (it early-returns when package.json is absent), so container
 # startup is fast and no runtime npm dependency is needed.
+ADD https://api.github.com/repos/yoydich/hermes-agent/commits/main /tmp/hermes-main-commit.json
 RUN git clone --depth 1 --branch ${HERMES_REF} ${HERMES_REPO} /opt/hermes-agent
 
 # Cache-bust: Railway sets RAILWAY_GIT_COMMIT_SHA per build, so this ARG
