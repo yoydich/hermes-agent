@@ -72,6 +72,22 @@ def _repo_name() -> str:
     return repo.removeprefix("https://github.com/").removesuffix(".git")
 
 
+def _fetch_full_history(remote: str, branch: str, repo_root: Path) -> None:
+    """Fetch a branch and remove shallow boundaries when Railway cloned depth=1."""
+    _run(
+        ["git", "fetch", "--prune", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+        repo_root,
+    )
+    if (repo_root / ".git" / "shallow").exists():
+        unshallow = _run(["git", "fetch", "--unshallow", remote], repo_root, check=False)
+        if unshallow.returncode != 0:
+            _run(["git", "fetch", "--deepen=100000", remote, branch], repo_root, check=False)
+        _run(
+            ["git", "fetch", "--prune", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+            repo_root,
+        )
+
+
 def sync_github(repo_root: Path) -> int:
     repo_root = repo_root.resolve()
     token = _configured_token()
@@ -108,8 +124,8 @@ def sync_github(repo_root: Path) -> int:
         _run(["git", "remote", "add", "upstream", upstream_url], repo_root)
 
     print("→ Fetching origin and upstream...")
-    _run(["git", "fetch", "origin", branch], repo_root)
-    _run(["git", "fetch", "upstream", branch], repo_root)
+    _fetch_full_history("origin", branch, repo_root)
+    _fetch_full_history("upstream", branch, repo_root)
     _run(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_root)
 
     current = _out(["git", "rev-parse", "--short", "HEAD"], repo_root)
