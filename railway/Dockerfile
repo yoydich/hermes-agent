@@ -47,6 +47,45 @@ RUN cd /opt/hermes-agent && \
     git reset --hard origin/${HERMES_REF} && \
     echo "Refreshed /opt/hermes-agent to ${RAILWAY_GIT_COMMIT_SHA} (origin/${HERMES_REF})"
 
+# Strip the "openrouter/" aggregator prefix from the model id before it's
+# sent to the OpenRouter API.  hermes's model catalog stores IDs in the
+# form "openrouter/qwen/qwen3-coder:free", but the OpenRouter API only
+# knows the bare "qwen/qwen3-coder:free" form and returns 400 ("not a
+# valid model ID") for the prefixed version.  The dashboard's model
+# picker saves catalog IDs verbatim, so we patch both api_kwargs build
+# paths in chat_completions.py to strip the prefix at request time.
+# Special-case "openrouter/pareto-code" — that's a real hermes-side
+# router plugin name, not an OpenRouter model ID.
+RUN python3 - <<'PY'
+from pathlib import Path
+p = Path("/opt/hermes-agent/agent/transports/chat_completions.py")
+text = p.read_text(encoding="utf-8")
+needle = '        api_kwargs: dict[str, Any] = {\n            "model": model,\n            "messages": sanitized,\n        }\n'
+inject = (
+    '        # Strip "openrouter/" aggregator prefix at request time —\n'
+    '        # the OpenRouter API rejects prefixed IDs even though the\n'
+    '        # catalog stores them that way.\n'
+    '        _outbound_model = model\n'
+    '        if params.get("is_openrouter") and isinstance(_outbound_model, str) \\\n'
+    '                and _outbound_model.startswith("openrouter/") \\\n'
+    '                and _outbound_model != "openrouter/pareto-code":\n'
+    '            _outbound_model = _outbound_model[len("openrouter/"):]\n'
+    '        api_kwargs: dict[str, Any] = {\n'
+    '            "model": _outbound_model,\n'
+    '            "messages": sanitized,\n'
+    '        }\n'
+)
+count = text.count(needle)
+if count == 0:
+    print("WARN: chat_completions.py api_kwargs needle not found, skipping patch")
+elif count > 2:
+    raise SystemExit(f"chat_completions.py: too many api_kwargs blocks ({count}) — patch is ambiguous")
+else:
+    text = text.replace(needle, inject)
+    p.write_text(text, encoding="utf-8")
+    print(f"Patched {count} api_kwargs block(s) in chat_completions.py")
+PY
+
 # npm_config_install_links=false forces npm to install file: deps as
 # symlinks (the npm 10+ default) even on the bundled npm 9.x that ships
 # with this Debian base. The host-side package-lock.json was generated
