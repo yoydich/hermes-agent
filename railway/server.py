@@ -540,10 +540,33 @@ class Gateway:
             model = env.get("LLM_MODEL", "")
             provider_key = next((env.get(k, "") for k in PROVIDER_KEYS if env.get(k)), "")
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
-            # Write config.yaml so hermes picks up the model (env vars alone aren't always enough)
-            write_config_yaml(read_env(ENV_FILE))
+            # Only seed config.yaml when it doesn't exist yet (first boot on a
+            # fresh volume). Subsequent gateway restarts MUST NOT overwrite
+            # config.yaml from .env — the dashboard's /api/config endpoints
+            # write directly to config.yaml when the user picks a different
+            # model, and a blind rewrite from .env would silently revert that
+            # change on every gateway restart.
+            cfg_path = Path(HERMES_HOME) / "config.yaml"
+            if not cfg_path.exists():
+                write_config_yaml(read_env(ENV_FILE))
+                print(f"[gateway] seeded {cfg_path} from .env (first boot)", flush=True)
+            # Clear stale PID file before spawn. hermes writes
+            # /data/.hermes/gateway.pid on start but doesn't always clean up
+            # on crash; the next spawn then exits with "Gateway already
+            # running (PID …)" and the supervisor loops forever. start.sh
+            # already does this once per boot, but the supervisor restarts
+            # the gateway inside the same container many times — so we
+            # repeat the cleanup here.
+            pid_file = Path(HERMES_HOME) / "gateway.pid"
+            try:
+                pid_file.unlink()
+                print(f"[gateway] removed stale {pid_file}", flush=True)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print(f"[gateway] could not remove {pid_file}: {e}", flush=True)
             self.proc = await asyncio.create_subprocess_exec(
-                "hermes", "gateway",
+                "hermes", "gateway", "run", "--replace",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
