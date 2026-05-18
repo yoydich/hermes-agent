@@ -825,7 +825,7 @@ def switch_model(
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in ("custom", "local") or (
+        is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -1079,6 +1079,7 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        get_curated_nous_model_ids,
     )
 
     results: List[dict] = []
@@ -1160,9 +1161,12 @@ def list_authenticated_providers(
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
-    if "nous" not in curated:
-        curated["nous"] = curated["openrouter"]
+    # "nous" pulls from the remote model-catalog manifest published at
+    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+    # newly added Portal models surface in the /model picker without
+    # requiring a Hermes release. Falls back to the in-repo
+    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
@@ -1521,7 +1525,7 @@ def list_authenticated_providers(
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
+                discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -1684,7 +1688,26 @@ def list_authenticated_providers(
                 continue
             # Live model discovery from custom provider endpoints (matches
             # Section 3 behavior for user ``providers:`` entries).
-            if api_url and api_key:
+            # Also probes when no api_key is set (e.g. local llama.cpp /
+            # Ollama servers) — the /models endpoint often works without
+            # auth.  The CLI's _model_flow_named_custom always probes, so
+            # the Telegram/Discord picker should do the same for parity.
+            # Live-discovery policy:
+            # - With an api_key, the user has explicitly opted into the
+            #   endpoint and live /models is the source of truth — replace
+            #   the (possibly partial) ``models:`` subset configured for
+            #   context-length overrides with the full live catalog.
+            #   This is the Bifrost / aggregator-gateway case.
+            # - Without an api_key but with an explicit ``models:`` list
+            #   (or top-level ``model:``), the user is narrowing a public
+            #   endpoint to a specific subset (e.g. ollama.com /v1/models
+            #   returns 35 models but the user only wants 4). Preserve the
+            #   explicit list and skip live discovery.
+            # - Without an api_key AND no explicit models, fall through to
+            #   live discovery so bare-endpoint custom providers (local
+            #   llama.cpp / Ollama servers) still appear populated.
+            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
 
