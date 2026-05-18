@@ -10,6 +10,21 @@ mkdir -p /data/.hermes/cron /data/.hermes/sessions /data/.hermes/logs \
          /data/.hermes/hooks /data/.hermes/image_cache /data/.hermes/audio_cache \
          /data/.hermes/workspace
 
+# Keep dependency/download caches out of the persistent Railway volume.
+# /data should hold durable Hermes state only; package caches can be rebuilt.
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/.cache}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/tmp/.cache/pip}"
+export npm_config_cache="${npm_config_cache:-/tmp/.npm}"
+export npm_config_store_dir="${npm_config_store_dir:-/tmp/.local/share/pnpm/store}"
+export PNPM_HOME="${PNPM_HOME:-/tmp/.local/share/pnpm}"
+export PNPM_STORE_DIR="${PNPM_STORE_DIR:-/tmp/.local/share/pnpm/store}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/.cache/uv}"
+export ELECTRON_CACHE="${ELECTRON_CACHE:-/tmp/.cache/electron}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/tmp/.cache/ms-playwright}"
+mkdir -p "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$npm_config_cache" \
+         "$npm_config_store_dir" "$PNPM_HOME" "$PNPM_STORE_DIR" "$UV_CACHE_DIR" \
+         "$ELECTRON_CACHE" "$PLAYWRIGHT_BROWSERS_PATH"
+
 if [ ! -f /data/.hermes/config.yaml ] && [ -f /opt/hermes-agent/cli-config.yaml.example ]; then
   cp /opt/hermes-agent/cli-config.yaml.example /data/.hermes/config.yaml
 fi
@@ -892,6 +907,15 @@ fi
 # image_cache and audio_cache grow unbounded — delete files older than 30 days.
 find /data/.hermes/image_cache -type f -mtime +30 -delete 2>/dev/null || true
 find /data/.hermes/audio_cache -type f -mtime +30 -delete 2>/dev/null || true
+
+# Package-manager caches should never live on the persistent volume. Older
+# deployments wrote these under /data because HOME=/data; prune them on every
+# boot so Railway's 5GB volume is reserved for durable state.
+rm -rf /data/.local/share/pnpm/store/v10 \
+       /data/.cache/electron \
+       /data/.cache/pip \
+       /data/.npm/_cacache \
+       /data/.npm/_npx 2>/dev/null || true
 
 # Curator writes one run.json per cycle; keep only the 20 most recent to cap growth.
 curator_reports=(/data/.hermes/logs/curator/run_*.json)

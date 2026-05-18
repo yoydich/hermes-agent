@@ -108,6 +108,17 @@ RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
+# Keep package-manager and download caches off the persistent Railway volume.
+# /data is only 5GB and must be reserved for durable Hermes state.
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV PIP_CACHE_DIR=/tmp/.cache/pip
+ENV npm_config_cache=/tmp/.npm
+ENV npm_config_store_dir=/tmp/.local/share/pnpm/store
+ENV PNPM_HOME=/tmp/.local/share/pnpm
+ENV PNPM_STORE_DIR=/tmp/.local/share/pnpm/store
+ENV UV_CACHE_DIR=/tmp/.cache/uv
+ENV ELECTRON_CACHE=/tmp/.cache/electron
+ENV PLAYWRIGHT_BROWSERS_PATH=/tmp/.cache/ms-playwright
 # Put the hermes venv's bin first on PATH so both:
 #   - server.py's `hermes gateway` subprocess resolves to the venv's CLI, and
 #   - the in-app Update flow's `uv pip install -e .` finds VIRTUAL_ENV at

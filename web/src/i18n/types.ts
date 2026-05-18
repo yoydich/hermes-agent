@@ -121,6 +121,7 @@ export interface Translations {
     starting: string;
     startedInBackground: string;
     stopped: string;
+    updateRequiresRestart: string;
     updateHermes: string;
     updatingHermes: string;
     waitingForOutput: string;

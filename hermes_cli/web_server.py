@@ -770,12 +770,21 @@ async def get_action_status(name: str, lines: int = 200):
         running = exit_code is None
         pid = proc.pid
 
+    requires_restart = name == "hermes-update" and running is False and exit_code == 0
+    message = (
+        "Update finished. Restart the dashboard/container to load the new version."
+        if requires_restart
+        else None
+    )
+
     return {
         "name": name,
         "running": running,
         "exit_code": exit_code,
         "pid": pid,
         "lines": tail,
+        "requires_restart": requires_restart,
+        "message": message,
     }
 
 
@@ -2799,9 +2808,10 @@ class RawConfigUpdate(BaseModel):
 @app.get("/api/config/raw")
 async def get_config_raw():
     path = get_config_path()
+    headers = {"Cache-Control": "no-store"}
     if not path.exists():
-        return {"yaml": ""}
-    return {"yaml": path.read_text(encoding="utf-8")}
+        return JSONResponse({"yaml": ""}, headers=headers)
+    return JSONResponse({"yaml": path.read_text(encoding="utf-8")}, headers=headers)
 
 
 @app.put("/api/config/raw")
@@ -2811,7 +2821,12 @@ async def update_config_raw(body: RawConfigUpdate):
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         save_config(parsed)
-        return {"ok": True}
+        path = get_config_path()
+        persisted = path.read_text(encoding="utf-8") if path.exists() else ""
+        return JSONResponse(
+            {"ok": True, "yaml": persisted},
+            headers={"Cache-Control": "no-store"},
+        )
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 

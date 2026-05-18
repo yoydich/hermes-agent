@@ -44,11 +44,15 @@ export function SystemActionsProvider({
         setActionStatus(resp);
         if (!resp.running) {
           const ok = resp.exit_code === 0;
+          const message =
+            ok && resp.requires_restart
+              ? t.status.updateRequiresRestart
+              : ok
+                ? t.status.actionFinished
+                : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`;
           setToast({
             type: ok ? "success" : "error",
-            message: ok
-              ? t.status.actionFinished
-              : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
+            message,
           });
           return;
         }
@@ -62,7 +66,12 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [
+    activeAction,
+    t.status.actionFailed,
+    t.status.actionFinished,
+    t.status.updateRequiresRestart,
+  ]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {

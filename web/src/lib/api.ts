@@ -105,10 +105,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string }>("/api/config/raw"),
+  getConfigRaw: () =>
+    fetchJSON<{ yaml: string }>("/api/config/raw", { cache: "no-store" }),
   saveConfigRaw: (yaml_text: string) =>
-    fetchJSON<{ ok: boolean }>("/api/config/raw", {
+    fetchJSON<{ ok: boolean; yaml: string }>("/api/config/raw", {
       method: "PUT",
+      cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
     }),
@@ -351,8 +353,10 @@ export interface ActionResponse {
 export interface ActionStatusResponse {
   exit_code: number | null;
   lines: string[];
+  message?: string | null;
   name: string;
   pid: number | null;
+  requires_restart?: boolean;
   running: boolean;
 }
 

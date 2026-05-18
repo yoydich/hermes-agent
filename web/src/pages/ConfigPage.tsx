@@ -267,7 +267,8 @@ export default function ConfigPage() {
   const handleYamlSave = async () => {
     setYamlSaving(true);
     try {
-      await api.saveConfigRaw(yamlText);
+      const resp = await api.saveConfigRaw(yamlText);
+      setYamlText(resp.yaml);
       showToast(t.config.yamlConfigSaved, "success");
       api
         .getConfig()
