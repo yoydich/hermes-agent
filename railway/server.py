@@ -203,24 +203,8 @@ def read_env(path: Path) -> dict[str, str]:
 def write_config_yaml(data: dict[str, str]) -> None:
     """Persist setup-selected model/provider without truncating config.yaml."""
     provider = (data.get("LLM_PROVIDER", "") or "auto").strip() or "auto"
-    model = (data.get("LLM_MODEL", "") or "").strip()
-    # OpenRouter API rejects models prefixed with "openrouter/" — that prefix
-    # is hermes's internal aggregator namespace (e.g. "openrouter/qwen/
-    # qwen3-coder:free" in the catalog), but the API itself only knows the
-    # bare vendor/model:tag form ("qwen/qwen3-coder:free"). The dashboard's
-    # model picker stores the catalog ID verbatim, so we strip the prefix
-    # at save time. Special-case "openrouter/pareto-code" — that's a real
-    # hermes-side router plugin, not a model ID, so keep it intact.
-    if provider == "openrouter" and model.startswith("openrouter/") and model != "openrouter/pareto-code":
-        model = model[len("openrouter/"):]
-    # Direct providers expect native model IDs, not OpenRouter-style prefixes.
-    if provider in {"deepseek", "gemini", "zai", "dashscope", "minimax", "nvidia", "arcee", "stepfun"}:
-        if model.startswith("models/"):
-            model = model.split("/", 1)[1]
-        if model.startswith(provider + "/"):
-            model = model[len(provider) + 1:]
-        if provider == "deepseek" and model.startswith("deepseek/"):
-            model = model.split("/", 1)[1]
+    model = normalize_model_id(provider, (data.get("LLM_MODEL", "") or "").strip())
+
     config_path = Path(HERMES_HOME) / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config: dict = {}
@@ -265,6 +249,28 @@ def write_config_yaml(data: dict[str, str]) -> None:
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+
+
+def normalize_model_id(provider: str, model: str) -> str:
+    """Normalize setup/catalog model IDs into Hermes provider-native IDs."""
+    # OpenRouter API rejects models prefixed with "openrouter/" — that prefix
+    # is hermes's internal aggregator namespace (e.g. "openrouter/qwen/
+    # qwen3-coder:free" in the catalog), but the API itself only knows the
+    # bare vendor/model:tag form ("qwen/qwen3-coder:free"). The dashboard's
+    # model picker stores the catalog ID verbatim, so we strip the prefix
+    # at save time. Special-case "openrouter/pareto-code" — that's a real
+    # hermes-side router plugin, not a model ID, so keep it intact.
+    if provider == "openrouter" and model.startswith("openrouter/") and model != "openrouter/pareto-code":
+        model = model[len("openrouter/"):]
+    # Direct providers expect native model IDs, not OpenRouter-style prefixes.
+    if provider in {"deepseek", "gemini", "zai", "dashscope", "minimax", "nvidia", "arcee", "stepfun"}:
+        if model.startswith("models/"):
+            model = model.split("/", 1)[1]
+        if model.startswith(provider + "/"):
+            model = model[len(provider) + 1:]
+        if provider == "deepseek" and model.startswith("deepseek/"):
+            model = model.split("/", 1)[1]
+    return model
 
 
 def read_model_config() -> dict[str, str]:

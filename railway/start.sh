@@ -721,7 +721,7 @@ sys.path.insert(0, "/app")
 from pathlib import Path
 import yaml
 from server import (
-    read_env, write_env, write_config_yaml, read_model_config,
+    read_env, write_env, write_config_yaml, read_model_config, normalize_model_id,
     ENV_FILE, PROVIDER_KEYS, PROVIDER_KEY_TO_ID,
 )
 
@@ -848,7 +848,15 @@ if needs_config_patch:
         f"provider={cfg_model.get('LLM_PROVIDER') or 'auto'}, model={cfg_model.get('LLM_MODEL', '')!r}"
     )
 else:
-    print("[migrate] config.yaml left unchanged")
+    cfg_model = read_model_config()
+    cfg_provider = cfg_model.get("LLM_PROVIDER", "")
+    cfg_model_id = cfg_model.get("LLM_MODEL", "")
+    normalized_model = normalize_model_id(cfg_provider, cfg_model_id)
+    if normalized_model != cfg_model_id:
+        write_config_yaml({"LLM_PROVIDER": cfg_provider, "LLM_MODEL": normalized_model})
+        print(f"[migrate] config.yaml model normalized: {cfg_model_id!r} → {normalized_model!r}")
+    else:
+        print("[migrate] config.yaml left unchanged")
 
 removed = []
 for legacy_key in ("LLM_MODEL", "LLM_PROVIDER"):
