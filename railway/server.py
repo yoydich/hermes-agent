@@ -94,6 +94,9 @@ else:
 
 # ── Env var registry ──────────────────────────────────────────────────────────
 # (key, label, category, is_secret)
+# LLM_MODEL / LLM_PROVIDER are legacy UI fields only. They are exposed by the
+# setup API for backward-compatible form binding, but are persisted to
+# config.yaml, never to .env.
 ENV_VARS = [
     ("LLM_MODEL",               "Model",                    "model",     False),
     ("LLM_PROVIDER",            "Provider",                 "model",     False),
@@ -264,6 +267,35 @@ def write_config_yaml(data: dict[str, str]) -> None:
     )
 
 
+def read_model_config() -> dict[str, str]:
+    """Return legacy setup UI model fields from config.yaml."""
+    config_path = Path(HERMES_HOME) / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    model_cfg = loaded.get("model")
+    if isinstance(model_cfg, dict):
+        return {
+            "LLM_MODEL": str(model_cfg.get("default") or ""),
+            "LLM_PROVIDER": str(model_cfg.get("provider") or ""),
+        }
+    if model_cfg:
+        return {"LLM_MODEL": str(model_cfg), "LLM_PROVIDER": ""}
+    return {}
+
+
+def env_plus_model_config() -> dict[str, str]:
+    """Read .env secrets plus model/provider from config.yaml for setup UI."""
+    data = read_env(ENV_FILE)
+    data.update({k: v for k, v in read_model_config().items() if v})
+    return data
+
+
 def write_env(path: Path, data: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     cat_order = ["model", "provider", "tool",
@@ -281,6 +313,8 @@ def write_env(path: Path, data: dict[str, str]) -> None:
 
     for k, v in data.items():
         if not v:
+            continue
+        if k in {"LLM_MODEL", "LLM_PROVIDER"}:
             continue
         cat = key_cat.get(k, "other")
         grouped.setdefault(cat, []).append(f"{k}={v}")
@@ -306,7 +340,7 @@ def is_config_complete(data: dict[str, str] | None = None) -> bool:
     Used by: GET / redirect, auto_start on boot, admin API status.
     """
     if data is None:
-        data = read_env(ENV_FILE)
+        data = env_plus_model_config()
     has_model = bool(data.get("LLM_MODEL"))
     has_provider = any(data.get(k) for k in PROVIDER_KEYS)
     return has_model and has_provider
@@ -541,14 +575,17 @@ class Gateway:
             return
         self.state = "starting"
         try:
-            # .env values take priority over Railway env vars.
-            # We build the env this way so hermes's own dotenv loading
-            # (which reads the same file) doesn't shadow our values.
+            # .env contains secrets only. Model/provider live in config.yaml.
             env = {**os.environ, "HERMES_HOME": HERMES_HOME}
             env.update(read_env(ENV_FILE))
-            model = env.get("LLM_MODEL", "")
+            model_cfg = read_model_config()
+            model = model_cfg.get("LLM_MODEL", "")
+            provider = model_cfg.get("LLM_PROVIDER", "auto") or "auto"
             provider_key = next((env.get(k, "") for k in PROVIDER_KEYS if env.get(k)), "")
-            print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
+            print(
+                f"[gateway] model={model or '⚠ NOT SET'} | provider={provider} | provider_key={'set' if provider_key else '⚠ NOT SET'}",
+                flush=True,
+            )
             # Only seed config.yaml when it doesn't exist yet (first boot on a
             # fresh volume). Subsequent gateway restarts MUST NOT overwrite
             # config.yaml from .env — the dashboard's /api/config endpoints
@@ -557,8 +594,8 @@ class Gateway:
             # change on every gateway restart.
             cfg_path = Path(HERMES_HOME) / "config.yaml"
             if not cfg_path.exists():
-                write_config_yaml(read_env(ENV_FILE))
-                print(f"[gateway] seeded {cfg_path} from .env (first boot)", flush=True)
+                write_config_yaml({})
+                print(f"[gateway] seeded {cfg_path} with defaults (first boot)", flush=True)
             # Clear stale PID file before spawn. hermes writes
             # /data/.hermes/gateway.pid on start but doesn't always clean up
             # on crash; the next spawn then exits with "Gateway already
@@ -740,7 +777,7 @@ async def route_health(request: Request):
 async def api_config_get(request: Request):
     if err := guard(request): return err
     async with cfg_lock:
-        data = read_env(ENV_FILE)
+        data = env_plus_model_config()
     defs = [{"key": k, "label": l, "category": c, "secret": s} for k, l, c, s in ENV_VARS]
     return JSONResponse({"vars": mask(data), "defs": defs})
 
@@ -765,8 +802,8 @@ async def api_config_put(request: Request):
             for k, v in existing.items():
                 if k not in merged:
                     merged[k] = v
-            write_env(ENV_FILE, merged)
             write_config_yaml(merged)
+            write_env(ENV_FILE, merged)
         if restart:
             asyncio.create_task(gw.restart())
         return JSONResponse({"ok": True, "restarting": restart})

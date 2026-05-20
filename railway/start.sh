@@ -705,29 +705,23 @@ if __name__ == "__main__":
 PYEOF
 chmod +x /data/.hermes/skills/devops/railway-ops/scripts/hearty_truth.py
 echo "[seed] skills/devops/railway-ops/scripts/hearty_truth.py synced"
-# Migrate existing .env + config.yaml so the bbb9a8c provider fix takes
-# effect on volumes that pre-date it. Without this, an old volume keeps
-# `provider: "auto"` in config.yaml AND lacks `LLM_PROVIDER` in .env, so
-# hermes's auto-detect picks whichever API key is present (often Gemini)
-# and routes a non-Gemini model name (e.g. models/deepseek-v4-flash) to
-# the Gemini API → HTTP 404 NOT_FOUND.
+# Migrate existing .env + config.yaml to the current Hermes contract:
+# .env stores secrets only; model/provider live in config.yaml. Older Railway
+# setup versions wrote LLM_MODEL / LLM_PROVIDER into /data/.hermes/.env, so we
+# move those values into config.yaml and remove the legacy .env keys.
 #
 # What this does on every container start:
 #   1. Read /data/.hermes/.env
-#   2. If LLM_PROVIDER is missing, infer it from whichever provider API
-#      key is set (DEEPSEEK_API_KEY → "deepseek", etc.)
-#   3. Normalize LLM_MODEL for direct providers (strip "models/" and
-#      "<provider>/" prefixes that the old UI used to suggest).
-#   4. Patch config.yaml only when migration changed values or the file is
-#      missing. Do not regenerate it on every boot: dashboard users edit this
-#      file directly, and unconditional rewrites truncate their settings.
+#   2. Seed config.yaml from legacy LLM_* keys only when config is missing.
+#   3. Remove LLM_MODEL / LLM_PROVIDER from .env.
+#   4. Leave existing config.yaml model choices untouched.
 python3 - <<'PYEOF'
 import sys
 sys.path.insert(0, "/app")
 from pathlib import Path
 import yaml
 from server import (
-    read_env, write_env, write_config_yaml,
+    read_env, write_env, write_config_yaml, read_model_config,
     ENV_FILE, PROVIDER_KEYS, PROVIDER_KEY_TO_ID,
 )
 
@@ -815,41 +809,23 @@ def ensure_railway_session_stability(config_path: Path) -> list[str]:
         )
     return changes
 
-# 1. Infer LLM_PROVIDER from which provider API key is set.
-if not data.get("LLM_PROVIDER"):
+config_path = Path("/data/.hermes/config.yaml")
+model_cfg = read_model_config()
+legacy_model = (data.get("LLM_MODEL") or "").strip()
+legacy_provider = (data.get("LLM_PROVIDER") or "").strip()
+if legacy_model and not legacy_provider:
     for key in PROVIDER_KEYS:
         if data.get(key):
-            data["LLM_PROVIDER"] = PROVIDER_KEY_TO_ID.get(key, "auto")
-            changed = True
-            print(f"[migrate] LLM_PROVIDER not set — inferred '{data['LLM_PROVIDER']}' from {key}")
+            legacy_provider = PROVIDER_KEY_TO_ID.get(key, "auto")
+            print(f"[migrate] inferred model.provider='{legacy_provider}' from {key}")
             break
+legacy_payload = dict(data)
+if legacy_model:
+    legacy_payload["LLM_MODEL"] = legacy_model
+if legacy_provider:
+    legacy_payload["LLM_PROVIDER"] = legacy_provider
 
-# 2. Normalize LLM_MODEL for direct providers (Gemini, DeepSeek, etc.).
-provider = (data.get("LLM_PROVIDER") or "").strip()
-model = (data.get("LLM_MODEL") or "").strip()
-DIRECT_PROVIDERS = {"deepseek", "gemini", "zai", "dashscope", "minimax",
-                    "nvidia", "arcee", "stepfun", "kimi-coding"}
-if provider in DIRECT_PROVIDERS and model:
-    original = model
-    if model.startswith("models/"):
-        model = model.split("/", 1)[1]
-    if model.startswith(provider + "/"):
-        model = model[len(provider) + 1:]
-    if provider == "deepseek" and model.startswith("deepseek/"):
-        model = model.split("/", 1)[1]
-    if model != original:
-        data["LLM_MODEL"] = model
-        changed = True
-        print(f"[migrate] LLM_MODEL normalized: {original!r} → {model!r}")
-
-# 3. Persist .env if needed. Patch config.yaml only when we performed a
-#    migration or the file is missing/invalid, so dashboard edits persist.
-if changed:
-    write_env(ENV_FILE, data)
-    print("[migrate] .env updated")
-
-config_path = Path("/data/.hermes/config.yaml")
-needs_config_patch = changed or not config_path.exists()
+needs_config_patch = not config_path.exists()
 if config_path.exists() and not needs_config_patch:
     try:
         cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -861,12 +837,27 @@ if config_path.exists() and not needs_config_patch:
                 needs_config_patch = True
     except Exception:
         needs_config_patch = True
+if legacy_model and not read_model_config().get("LLM_MODEL"):
+    needs_config_patch = True
 
 if needs_config_patch:
-    write_config_yaml(data)
-    print(f"[migrate] config.yaml patched — provider={provider or 'auto'}, model={data.get('LLM_MODEL', '')!r}")
+    write_config_yaml(legacy_payload)
+    cfg_model = read_model_config()
+    print(
+        "[migrate] config.yaml patched — "
+        f"provider={cfg_model.get('LLM_PROVIDER') or 'auto'}, model={cfg_model.get('LLM_MODEL', '')!r}"
+    )
 else:
     print("[migrate] config.yaml left unchanged")
+
+removed = []
+for legacy_key in ("LLM_MODEL", "LLM_PROVIDER"):
+    if legacy_key in data:
+        data.pop(legacy_key, None)
+        removed.append(legacy_key)
+if removed:
+    write_env(ENV_FILE, data)
+    print("[migrate] removed non-secret model settings from .env: " + ", ".join(removed))
 
 try:
     if ensure_railway_token_passthrough(config_path):
