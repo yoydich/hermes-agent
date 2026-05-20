@@ -244,6 +244,7 @@ def write_config_yaml(data: dict[str, str]) -> None:
     # sessions; users can still opt into idle/daily reset in config.yaml.
     config.setdefault("session_reset", {"mode": "none", "idle_minutes": 10080, "at_hour": 4})
     config.setdefault("data_dir", HERMES_HOME)
+    normalize_config_model_ids(config)
 
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -271,6 +272,32 @@ def normalize_model_id(provider: str, model: str) -> str:
         if provider == "deepseek" and model.startswith("deepseek/"):
             model = model.split("/", 1)[1]
     return model
+
+
+def normalize_config_model_ids(config: dict) -> list[str]:
+    """Normalize all nested provider/model blocks in config.yaml in place."""
+    changes: list[str] = []
+
+    def visit(node, path: str) -> None:
+        if isinstance(node, dict):
+            provider = node.get("provider")
+            if isinstance(provider, str):
+                for key in ("model", "default"):
+                    value = node.get(key)
+                    if isinstance(value, str) and value:
+                        normalized = normalize_model_id(provider, value)
+                        if normalized != value:
+                            node[key] = normalized
+                            changes.append(f"{path}.{key}: {value!r} -> {normalized!r}")
+            for child_key, child_value in node.items():
+                child_path = f"{path}.{child_key}" if path else str(child_key)
+                visit(child_value, child_path)
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                visit(item, f"{path}[{idx}]")
+
+    visit(config, "")
+    return changes
 
 
 def read_model_config() -> dict[str, str]:
