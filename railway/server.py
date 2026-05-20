@@ -611,6 +611,16 @@ class Gateway:
             # .env contains secrets only. Model/provider live in config.yaml.
             env = {**os.environ, "HERMES_HOME": HERMES_HOME}
             env.update(read_env(ENV_FILE))
+            env.setdefault("XDG_CACHE_HOME", "/tmp/.cache")
+            env.setdefault("PIP_CACHE_DIR", "/tmp/.cache/pip")
+            env.setdefault("npm_config_cache", "/tmp/.npm")
+            env.setdefault("NPM_CONFIG_CACHE", env["npm_config_cache"])
+            env.setdefault("npm_config_store_dir", "/tmp/.local/share/pnpm/store")
+            env.setdefault("NPM_CONFIG_STORE_DIR", env["npm_config_store_dir"])
+            env.setdefault("PNPM_HOME", "/tmp/.local/share/pnpm")
+            env.setdefault("PNPM_STORE_DIR", "/tmp/.local/share/pnpm/store")
+            env.setdefault("UV_CACHE_DIR", "/tmp/.cache/uv")
+            env.setdefault("ELECTRON_CACHE", "/tmp/.cache/electron")
             model_cfg = read_model_config()
             model = model_cfg.get("LLM_MODEL", "")
             provider = model_cfg.get("LLM_PROVIDER", "auto") or "auto"
